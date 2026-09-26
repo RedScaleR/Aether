@@ -1,0 +1,1688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aether UI Docs</title>
+<meta name="description" content="Documentation for Aether, a Roblox UI library: windows, tabs, elements, themes, configs, notifications and more.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Colours mirror Core/Theme in Aether.lua. JS rewrites them when the theme changes.
+   Roblox "Transparency" t becomes CSS alpha (1 - t). */
+:root {
+  --accent: #8b5cf6;
+  --accent-2: #3b82f6;
+  --on-accent: #ffffff;
+  --bg: rgba(13,13,22,0.94);
+  --bg-solid: #0d0d16;
+  --element: rgba(255,255,255,0.035);
+  --hover: rgba(255,255,255,0.055);
+  --indicator: rgba(139,92,246,0.16);
+  --input: rgba(255,255,255,0.05);
+  --stroke: rgba(255,255,255,0.1);
+  --divider: rgba(255,255,255,0.07);
+  --text: #f4f4f8;
+  --text-dim: #a6a6ba;
+  --text-muted: #6f6f86;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #f43f5e;
+  --shadow: #000000;
+  --glow: rgba(139,92,246,0.18);
+  --backdrop: #06060b;
+  --code: rgba(0,0,0,0.28);
+  --spring: cubic-bezier(.34,1.36,.64,1);
+  --smooth: cubic-bezier(.22,1,.36,1);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--backdrop);
+  color: var(--text);
+  font: 14px/1.55 Figtree, "Builder Sans", Gotham, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  transition: background-color .4s;
+}
+/* The "game" behind the window: soft blobs so the frosted glass has something to blur. */
+.scene { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+.scene i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .35; transition: background .6s; }
+.scene i:nth-child(1) { width: 46vw; height: 46vw; left: -8vw; top: -12vw; background: var(--accent); }
+.scene i:nth-child(2) { width: 38vw; height: 38vw; right: -10vw; bottom: -14vw; background: var(--accent-2); }
+.scene i:nth-child(3) { width: 24vw; height: 24vw; right: 22vw; top: 8vh; background: var(--accent); opacity: .12; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .mono { font-family: "Roboto Mono", ui-monospace, Menlo, Consolas, monospace; }
+:not(pre) > code {
+  background: var(--input);
+  border: 1px solid var(--stroke);
+  border-radius: 4px;
+  padding: .05em .35em;
+  font-size: .86em;
+  overflow-wrap: anywhere;
+}
+button { font: inherit; color: inherit; }
+
+/* ------------------------------------------------------------------ Window */
+.window {
+  position: fixed; inset: 28px;
+  max-width: 1180px; margin: 0 auto;
+  border-radius: 12px;
+  background: var(--bg);
+  backdrop-filter: blur(24px) saturate(1.2);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  box-shadow: 0 6px 12px rgba(0,0,0,.18), 0 18px 60px rgba(0,0,0,.45);
+  display: grid;
+  grid-template-rows: 52px minmax(0, 1fr);
+  grid-template-columns: 184px minmax(0, 1fr);
+  overflow: hidden;
+  animation: pop .55s var(--spring) both;
+}
+@keyframes pop { from { opacity: 0; transform: scale(.94); } }
+/* Border: accent in the top-left corner fading into a neutral hairline. */
+.window::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none; z-index: 5;
+  background: linear-gradient(130deg, color-mix(in srgb, var(--accent) 65%, transparent) 0%, var(--stroke) 35%, var(--stroke) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+/* Aurora: a faint accent glow washing in from the top-left. */
+.window::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: linear-gradient(120deg, var(--glow) 0%, color-mix(in srgb, var(--accent-2) 4%, transparent) 50%, transparent 100%);
+}
+
+/* ------------------------------------------------------------------ Topbar */
+.topbar {
+  grid-column: 1 / -1; position: relative; z-index: 2;
+  display: flex; align-items: center; gap: 12px; padding: 0 12px 0 14px;
+  border-bottom: 1px solid var(--divider);
+}
+.logo {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  display: grid; place-items: center; color: var(--on-accent);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+.logo svg { width: 14px; height: 14px; }
+.titles { min-width: 0; flex: 1; line-height: 1.2; }
+.titles b { display: block; font-size: 15px; font-weight: 700; }
+.titles span { display: block; font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.controls { display: flex; align-items: center; gap: 6px; }
+.search-btn {
+  display: flex; align-items: center; gap: 8px; height: 30px; width: 190px; padding: 0 6px 0 10px;
+  background: var(--input); border: 1px solid var(--stroke); border-radius: 8px;
+  color: var(--text-dim); font-size: 13px; cursor: pointer; transition: background .2s;
+}
+.search-btn:hover { background: var(--hover); }
+.search-btn .label { flex: 1; text-align: left; }
+.kbd {
+  font-size: 10px; font-weight: 500; color: var(--text-dim);
+  background: var(--element); border: 1px solid var(--stroke); border-radius: 4px; padding: 1px 6px;
+}
+.ctl {
+  width: 30px; height: 30px; border-radius: 8px; border: 0; background: transparent;
+  display: grid; place-items: center; color: var(--text-dim); cursor: pointer; transition: background .2s, color .2s;
+}
+.ctl:hover { background: var(--hover); color: var(--text); }
+.ctl svg, .search-btn svg { width: 15px; height: 15px; }
+
+/* ------------------------------------------------------------------ Sidebar */
+.sidebar {
+  position: relative; z-index: 2; display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--divider);
+}
+.tabs { position: relative; flex: 1; overflow-y: auto; padding: 10px 8px; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.group-label { font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 12px 10px 4px; letter-spacing: .02em; }
+.group-label:first-child { padding-top: 2px; }
+.tab {
+  position: relative; z-index: 1; display: flex; align-items: center; gap: 11px;
+  width: 100%; height: 36px; padding: 0 11px; margin-bottom: 2px;
+  border: 0; border-radius: 8px; background: transparent; cursor: pointer;
+  color: var(--text-dim); font-size: 14px; font-weight: 500; text-align: left;
+  transition: background .2s, color .2s;
+}
+.tab:hover { background: var(--hover); color: var(--text); }
+.tab.active { color: var(--text); background: transparent; }
+.tab.active .ico { color: var(--accent); }
+.tab .ico { width: 18px; height: 18px; flex: none; display: grid; place-items: center; transition: color .2s; }
+.tab .ico svg { width: 18px; height: 18px; stroke-width: 2; }
+.tab .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* No icon: the tab's initial in a rounded badge, like Aether does. */
+.badge { width: 18px; height: 18px; border: 1.2px solid currentColor; border-radius: 5px; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.indicator {
+  position: absolute; left: 8px; right: 8px; height: 36px; z-index: 0; border-radius: 8px;
+  background: var(--indicator); pointer-events: none;
+  transition: top .5s var(--spring), opacity .2s;
+}
+.indicator::before {
+  content: ""; position: absolute; left: 0; top: 50%; width: 3px; height: 16px; margin-top: -8px; border-radius: 3px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+}
+.user {
+  height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  border-top: 1px solid var(--divider);
+}
+.avatar {
+  width: 32px; height: 32px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: var(--on-accent); font-weight: 700; font-size: 13px;
+}
+.user b { display: block; font-size: 13px; font-weight: 600; }
+.user span { display: block; font-size: 11px; color: var(--text-dim); }
+.user div { min-width: 0; line-height: 1.25; }
+
+/* ------------------------------------------------------------------ Pages */
+.pages { position: relative; z-index: 1; overflow-y: auto; padding: 16px 18px 24px 16px; scroll-behavior: smooth; }
+.pages::-webkit-scrollbar { width: 6px; }
+.pages::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 3px; }
+.pages { scrollbar-width: thin; scrollbar-color: var(--text-muted) transparent; }
+section { display: none; max-width: 820px; }
+section.active { display: block; animation: page .35s var(--smooth); }
+@keyframes page { from { opacity: 0; transform: translateY(8px); } }
+
+h1 { font-size: 26px; line-height: 1.2; margin: 4px 0 8px; font-weight: 700; letter-spacing: -.01em; }
+h2 { font-size: 20px; margin: 2px 0 6px; font-weight: 700; }
+p { margin: 0 0 12px; color: var(--text-dim); }
+p b, p strong { color: var(--text); }
+.lead { font-size: 15px; }
+.grad { background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+/* Section header: like Section.Header (13px semibold, TextDim) */
+h3, h4 { font-size: 13px; font-weight: 600; color: var(--text-dim); margin: 22px 0 8px 4px; }
+
+/* Section card + element rows, like Section.Body and Element rows. */
+.card-body, .table-body {
+  background: var(--element); border: 1px solid var(--stroke); border-radius: 10px; padding: 4px;
+  display: flex; flex-direction: column; gap: 2px; margin: 0 0 16px;
+}
+.row {
+  display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 9px 12px; border-radius: 8px;
+  transition: background .2s;
+}
+.row:hover { background: var(--hover); }
+.row .txt { flex: 1; min-width: 0; }
+.row .t { font-size: 14px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.row .t.method { font-family: "Roboto Mono", monospace; font-size: 13px; }
+.row .t code { background: none; border: 0; padding: 0; font-size: 13px; }
+.row .d { font-size: 12.5px; color: var(--text-dim); margin-top: 2px; }
+.row .d code { font-size: 11.5px; }
+.chip {
+  flex: none; max-width: 45%; font-size: 11.5px; color: var(--text-dim); text-align: right;
+  background: var(--input); border: 1px solid var(--stroke); border-radius: 6px; padding: 2px 8px;
+  font-family: "Roboto Mono", monospace; overflow-wrap: anywhere;
+}
+
+/* Hero bits */
+.pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 18px; }
+.pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; background: var(--input); border: 1px solid var(--stroke); color: var(--text-dim); }
+.cards { background: var(--element); border: 1px solid var(--stroke); border-radius: 10px; padding: 4px; display: flex; flex-direction: column; gap: 2px; margin: 0 0 16px; }
+.card { padding: 9px 12px; border-radius: 8px; transition: background .2s; }
+.card:hover { background: var(--hover); }
+.card b { display: block; font-size: 14px; font-weight: 500; }
+.card span { display: block; font-size: 12.5px; color: var(--text-dim); }
+
+/* Code blocks: a section card holding a code "input". */
+.code { background: var(--element); border: 1px solid var(--stroke); border-radius: 10px; margin: 0 0 16px; overflow: hidden; }
+.code-head { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 6px 0 14px; font-size: 12px; color: var(--text-dim); font-weight: 500; }
+.code-head .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: middle; }
+.code pre {
+  margin: 0 4px 4px; padding: 12px 14px; border-radius: 8px; background: var(--code);
+  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.copy {
+  height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 500;
+  background: var(--input); border: 1px solid var(--stroke); color: var(--text-dim); transition: background .2s, color .2s;
+}
+.copy:hover { background: var(--hover); color: var(--text); }
+.tk { color: var(--accent); }
+.ts { color: var(--success); }
+.tn { color: var(--warning); }
+.tc { color: var(--text-muted); font-style: italic; }
+.tf { color: var(--accent-2); }
+.tb { color: var(--danger); }
+
+/* Notes: element row with the indicator bar. */
+.note {
+  position: relative; background: var(--indicator); border-radius: 8px; padding: 10px 14px 10px 18px; margin: 0 0 16px;
+  font-size: 13px; color: var(--text);
+}
+.note::before { content: ""; position: absolute; left: 7px; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: linear-gradient(180deg, var(--accent), var(--accent-2)); }
+.note.warn { background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.note.warn::before { background: var(--warning); }
+
+/* Theme swatches double as theme buttons. */
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 16px; }
+.swatch {
+  display: flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px; border-radius: 99px; cursor: pointer;
+  background: var(--element); border: 1px solid var(--stroke); font-size: 12.5px; color: var(--text); transition: background .2s, border-color .2s;
+}
+.swatch:hover { background: var(--hover); }
+.swatch.on { border-color: var(--accent); }
+.swatch i { width: 20px; height: 20px; border-radius: 50%; display: block; }
+.method { font-family: "Roboto Mono", monospace; }
+.type { color: var(--text-muted); }
+
+/* Pager at the bottom of each page */
+.pager { display: flex; gap: 8px; margin-top: 24px; }
+.pager button {
+  flex: 1; text-align: left; padding: 9px 12px; border-radius: 10px; cursor: pointer;
+  background: var(--element); border: 1px solid var(--stroke); transition: background .2s;
+}
+.pager button:hover { background: var(--hover); }
+.pager button.next { text-align: right; }
+.pager small { display: block; font-size: 11px; color: var(--text-muted); }
+.pager span { font-size: 14px; font-weight: 500; }
+
+/* ------------------------------------------------------------------ Menu (themes), palette, toasts */
+.menu {
+  position: absolute; z-index: 30; min-width: 190px; padding: 4px; border-radius: 10px;
+  background: var(--bg-solid); border: 1px solid var(--stroke); box-shadow: 0 12px 40px rgba(0,0,0,.4);
+  transform-origin: top right; animation: menu .25s var(--spring);
+}
+@keyframes menu { from { opacity: 0; transform: scale(.92); } }
+.menu button {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 10px; border: 0; border-radius: 7px;
+  background: transparent; cursor: pointer; font-size: 13px; color: var(--text); text-align: left;
+}
+.menu button:hover { background: var(--hover); }
+.menu button i { width: 14px; height: 14px; border-radius: 50%; }
+.menu button .check { margin-left: auto; color: var(--accent); }
+.menu .sep { height: 1px; background: var(--divider); margin: 4px 6px; }
+.menu .head { font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 6px 10px 4px; }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 40; display: none; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px;
+  background: rgba(0,0,0,.45);
+}
+.overlay.open { display: flex; }
+.palette {
+  width: 100%; max-width: 520px; border-radius: 12px; overflow: hidden;
+  background: var(--bg-solid); border: 1px solid var(--stroke); box-shadow: 0 24px 80px rgba(0,0,0,.5);
+  animation: pop .35s var(--spring);
+}
+.palette-input { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 14px; border-bottom: 1px solid var(--divider); color: var(--text-dim); }
+.palette-input svg { width: 16px; height: 16px; flex: none; }
+.palette-input input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 15px; }
+.results { max-height: 50vh; overflow-y: auto; padding: 4px; }
+.result { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.result.sel { background: var(--indicator); }
+.result .ico { width: 16px; height: 16px; color: var(--text-dim); flex: none; }
+.result.sel .ico { color: var(--accent); }
+.result .ico svg { width: 16px; height: 16px; }
+.result b { font-weight: 500; font-size: 14px; }
+.result small { margin-left: auto; font-size: 11.5px; color: var(--text-muted); white-space: nowrap; }
+.empty { padding: 18px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; width: 290px; max-width: calc(100vw - 32px); }
+.toast {
+  position: relative; overflow: hidden; display: flex; gap: 10px; padding: 12px 14px 14px; border-radius: 10px;
+  background: var(--bg-solid); border: 1px solid var(--stroke); box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  animation: toastIn .45s var(--spring);
+}
+.toast.out { animation: toastOut .25s ease forwards; }
+@keyframes toastIn { from { opacity: 0; transform: translateX(30px); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(30px); } }
+.toast .ico { color: var(--success); width: 16px; height: 16px; margin-top: 2px; flex: none; }
+.toast b { display: block; font-size: 14px; font-weight: 600; }
+.toast span { display: block; font-size: 12.5px; color: var(--text-dim); }
+.toast .bar { position: absolute; left: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); animation: bar linear forwards; }
+@keyframes bar { from { width: 100%; } to { width: 0; } }
+
+.hidden { display: none !important; }
+
+/* ------------------------------------------------------------------ Compact (like Aether's icon-only sidebar on narrow windows) */
+@media (max-width: 860px) {
+  .window { inset: 10px; grid-template-columns: 56px minmax(0, 1fr); }
+  .group-label, .tab .name, .user div { display: none; }
+  .tab { justify-content: center; padding: 0; }
+  .user { padding: 0; justify-content: center; }
+  .search-btn { width: 30px; padding: 0; justify-content: center; border-color: transparent; background: transparent; }
+  .search-btn .label, .search-btn .kbd { display: none; }
+  .pages { padding: 14px 12px 20px; }
+  .row { flex-wrap: wrap; }
+  .chip { max-width: 100%; text-align: left; }
+  h1 { font-size: 22px; }
+}
+@media (max-width: 420px) {
+  .window { inset: 0; border-radius: 0; }
+  .titles span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="scene"><i></i><i></i><i></i></div>
+
+<div class="window" id="app">
+  <header class="topbar">
+    <div class="logo"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 22 12 12 22 2 12z"/></svg></div>
+    <div class="titles"><b>Aether</b><span>Documentation · v0.1.0</span></div>
+    <div class="controls">
+      <button class="search-btn" id="searchBtn" aria-label="Search (Ctrl K)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span class="label">Search</span><span class="kbd">Ctrl K</span>
+      </button>
+      <button class="ctl" id="themeBtn" aria-label="Theme" title="Theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.5" fill="currentColor"/><circle cx="17.5" cy="10.5" r="1.5" fill="currentColor"/><circle cx="8.5" cy="7.5" r="1.5" fill="currentColor"/><circle cx="6.5" cy="12.5" r="1.5" fill="currentColor"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a6 6 0 0 0 6-6c0-4.9-4.5-8.6-10-8.6z"/></svg>
+      </button>
+      <a class="ctl" href="https://github.com/RedScaleR/Aether" aria-label="GitHub" title="GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </div>
+  </header>
+
+  <aside class="sidebar">
+    <nav class="tabs" id="tabs"><div class="indicator" id="indicator"></div></nav>
+    <div class="user">
+      <div class="avatar">A</div>
+      <div><b>Aether UI</b><span>MIT · no telemetry</span></div>
+    </div>
+  </aside>
+
+  <main class="pages" id="pages">
+
+<!-- ================================================================ INTRO -->
+<section id="intro" class="hero">
+  <h1>Build beautiful script UIs with <span class="grad">Aether</span></h1>
+  <p class="lead">A frosted-glass Roblox UI library with springy animations, a command palette, pinnable widgets, configs, themes and a drop-in Rayfield compatibility layer. Readable source, no telemetry: Aether never makes network requests on its own.</p>
+  <div class="pills">
+    <span class="pill">10 built-in elements</span>
+    <span class="pill">7 themes</span>
+    <span class="pill">Configs &amp; share codes</span>
+    <span class="pill">Ctrl + K palette</span>
+    <span class="pill">Touch friendly</span>
+    <span class="pill">Rayfield compatible</span>
+  </div>
+  <div class="cards">
+    <div class="card"><b>Chainable</b><span>Every method returns itself, so you can write <code>Tab:Button("Hi"):OnClick(fn)</code>.</span></div>
+    <div class="card"><b>Auto-saving</b><span>Every value is saved automatically, keyed by its flag or by Tab/Section/Name.</span></div>
+    <div class="card"><b>Pin anything</b><span>Drag an element out of the window to get a floating widget that stays in sync.</span></div>
+    <div class="card"><b>Accessible</b><span>Reduced motion mode, keyboard toggle key and fit-to-screen scaling.</span></div>
+  </div>
+</section>
+
+<!-- ================================================================ INSTALL -->
+<section id="install">
+  <h2>Installation</h2>
+  <p>Load the library with <code>loadstring</code> in your executor, then create a window.</p>
+<div class="code"><pre>local Aether = loadstring(game:HttpGet("https://raw.githubusercontent.com/RedScaleR/Aether/main/Aether.lua"))()
+
+local Window = Aether:Window({ Name = "My Script", Subtitle = "v1.0" })</pre></div>
+  <p>That's all you need. The window shows itself automatically once your tabs are in place. Press <code>RightControl</code> to hide or show it.</p>
+</section>
+
+<!-- ================================================================ QUICKSTART -->
+<section id="quickstart">
+  <h2>Full example</h2>
+  <p>A complete script using most of the library. Copy it, paste it into your executor, and start tweaking.</p>
+<div class="code"><pre>local Aether = loadstring(game:HttpGet("https://raw.githubusercontent.com/RedScaleR/Aether/main/Aether.lua"))()
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local function humanoid()
+    local character = LocalPlayer.Character
+    return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local Window = Aether:Window({
+    Name = "Aether Hub",
+    Subtitle = "v1.0",
+    Icon = "sparkles",
+    Theme = "Aether",
+    ToggleKey = "RightControl",
+})
+
+-- Player tab
+local Player = Window:Tab({ Name = "Player", Icon = "user" })
+
+Player:Section("Movement")
+
+Player:Slider({
+    Name = "WalkSpeed",
+    Min = 16, Max = 200, Default = 16, Increment = 1,
+    Suffix = " studs",
+    Flag = "WalkSpeed",
+    Callback = function(value)
+        local h = humanoid()
+        if h then h.WalkSpeed = value end
+    end,
+})
+
+Player:Slider({
+    Name = "JumpPower",
+    Min = 50, Max = 300, Default = 50,
+    Flag = "JumpPower",
+    Callback = function(value)
+        local h = humanoid()
+        if h then h.JumpPower = value end
+    end,
+})
+
+Player:Toggle({
+    Name = "Infinite Jump",
+    Description = "Jump again while in the air",
+    Keybind = "J",
+    Flag = "InfJump",
+})
+
+game:GetService("UserInputService").JumpRequest:Connect(function()
+    if Aether.Flags.InfJump then
+        local h = humanoid()
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+Player:Section("Server")
+
+Player:Button("Rejoin")
+    :Description("Reconnects to this server")
+    :OnClick(function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+    end)
+
+-- Visuals tab
+local Visuals = Window:Tab({ Name = "Visuals", Icon = "eye" })
+
+Visuals:Toggle({ Name = "ESP", Flag = "ESP" })
+
+Visuals:ColorPicker({
+    Name = "ESP color",
+    Default = Color3.fromRGB(139, 92, 246),
+    Flag = "ESPColor",
+})
+
+Visuals:Dropdown({
+    Name = "ESP mode",
+    Options = { "Box", "Highlight", "Name only" },
+    Default = "Highlight",
+    Flag = "ESPMode",
+})
+
+-- Misc tab
+local Misc = Window:Tab({ Name = "Misc", Icon = "settings-2" })
+
+local status = Misc:Label("Status: idle")
+
+Misc:Input({
+    Name = "Message",
+    Placeholder = "Type something...",
+    Callback = function(text)
+        status:SetText("Status: you typed " .. text)
+        Aether:Notify({ Title = "Got it", Content = text, Type = "Success" })
+    end,
+})
+
+Misc:Keybind({
+    Name = "Panic",
+    Default = "P",
+    Callback = function()
+        Aether:Unload()
+    end,
+})
+
+-- Built-in settings
+Window:SettingsTab()
+
+Aether:Notify({ Title = "Loaded", Content = "Press RightControl to toggle the UI.", Type = "Info" })</pre></div>
+</section>
+
+<!-- ================================================================ OPTIONS STYLE -->
+<section id="options-style">
+  <h2>Calling styles</h2>
+  <p>Every constructor (<code>Window</code>, <code>Tab</code>, <code>Section</code> and every element) accepts either an options table, a name string, or a name string followed by an options table. These three lines are equivalent:</p>
+<div class="code"><pre>Tab:Toggle({ Name = "Fly", Default = true })
+Tab:Toggle("Fly", { Default = true })
+Tab:Toggle("Fly"):Set(true)</pre></div>
+  <p>Friendly aliases from other libraries also work: <code>Title</code> is accepted for <code>Name</code>, and <code>Desc</code> for <code>Description</code>.</p>
+  <p>Every element method is also available with a <code>Create</code> prefix (<code>Tab:CreateToggle</code>, <code>Tab:CreateSlider</code>…). Those keep Rayfield's callback shapes, see <a href="#rayfield">Rayfield compatibility</a>.</p>
+</section>
+
+<!-- ================================================================ WINDOW -->
+<section id="window">
+  <h2>Window</h2>
+  <p>The main frosted-glass window with a topbar, sidebar tabs, dragging, resizing and fit-to-screen scaling. Create one with <code>Aether:Window(options)</code> (alias <code>Aether:CreateWindow</code>).</p>
+<div class="code"><pre>local Window = Aether:Window({
+    Name = "My Script",
+    Subtitle = "by me",
+    Icon = "sword",
+    Size = Vector2.new(680, 460),
+    Theme = "Midnight",
+    ToggleKey = "RightShift",
+    AutoSave = true,
+})</pre></div>
+  <h3>Options</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Option</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>Name</code></td><td class="type">string</td><td>Window title. Also names the config folder. Default <code>"Aether"</code>.</td></tr>
+    <tr><td><code>Subtitle</code></td><td class="type">string</td><td>Small text next to the title.</td></tr>
+    <tr><td><code>Icon</code></td><td class="type">string | number</td><td>Logo icon: a Lucide name, an asset id or an <code>rbxassetid://</code> string.</td></tr>
+    <tr><td><code>Size</code></td><td class="type">Vector2 | UDim2</td><td>Window size in pixels. Default 680×460 (580×340 on touch). Minimum 400×300.</td></tr>
+    <tr><td><code>Theme</code></td><td class="type">string | table</td><td>A theme name (see <a href="#themes">Themes</a>) or a table of colors.</td></tr>
+    <tr><td><code>ToggleKey</code></td><td class="type">string | KeyCode</td><td>Key that hides / shows the window. Default <code>RightControl</code>.</td></tr>
+    <tr><td><code>PaletteKey</code></td><td class="type">string | KeyCode | false</td><td>Ctrl + this key opens the command palette. Default <code>K</code>. <code>false</code> disables it.</td></tr>
+    <tr><td><code>Visible</code></td><td class="type">boolean</td><td><code>false</code> keeps the window hidden at start. Default <code>true</code>.</td></tr>
+    <tr><td><code>Resizable</code></td><td class="type">boolean</td><td><code>false</code> hides the resize grip.</td></tr>
+    <tr><td><code>Sidebar</code></td><td class="type">"Auto" | "Full" | "Compact"</td><td>Auto collapses the sidebar to icons when the window is narrow.</td></tr>
+    <tr><td><code>SidebarWidth</code></td><td class="type">number</td><td>Width of the full sidebar. Default 184 (156 on touch).</td></tr>
+    <tr><td><code>ShowUser</code></td><td class="type">boolean</td><td><code>false</code> hides the player card at the bottom of the sidebar.</td></tr>
+    <tr><td><code>OpenButton</code></td><td class="type">"Auto" | boolean</td><td>Floating button to reopen the hidden window. Auto shows it on touch devices only.</td></tr>
+    <tr><td><code>AutoSave</code></td><td class="type">boolean | string</td><td>Saves every change and restores it next run. A string names the save file.</td></tr>
+    <tr><td><code>AutoLoad</code></td><td class="type">boolean</td><td><code>false</code> skips loading the autoload config on start.</td></tr>
+    <tr><td><code>ConfigFolder</code></td><td class="type">string</td><td>Custom folder for configs. Default <code>Aether/&lt;Name&gt;</code>.</td></tr>
+    <tr><td><code>PerGame</code></td><td class="type">boolean</td><td>Keeps separate configs for each game (by PlaceId).</td></tr>
+    <tr><td><code>SavePrefs</code></td><td class="type">boolean</td><td><code>false</code> stops saving interface preferences (theme, toggle key, pins).</td></tr>
+  </table></div>
+  <h3>Methods</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td class="method">Window:Tab(options)</td><td>Adds a tab. Alias <code>CreateTab</code>.</td></tr>
+    <tr><td class="method">Window:SelectTab(tab)</td><td>Switches to a tab.</td></tr>
+    <tr><td class="method">Window:SettingsTab()</td><td>Adds the ready-made <a href="#settings">settings tab</a>.</td></tr>
+    <tr><td class="method">Window:Show() / Hide() / Toggle()</td><td>Shows, hides or toggles the window.</td></tr>
+    <tr><td class="method">Window:SetVisible(visible)</td><td>Sets visibility directly.</td></tr>
+    <tr><td class="method">Window:Minimize(state)</td><td>Collapses the window to its topbar.</td></tr>
+    <tr><td class="method">Window:SetTitle(title, subtitle)</td><td>Changes the title and subtitle.</td></tr>
+    <tr><td class="method">Window:SetToggleKey(key) / GetToggleKey()</td><td>Changes or reads the toggle key.</td></tr>
+    <tr><td class="method">Window:Notify(options)</td><td>Same as <a href="#notifications">Aether:Notify</a>.</td></tr>
+    <tr><td class="method">Window:Dialog(options)</td><td>Opens a <a href="#dialogs">dialog</a>.</td></tr>
+    <tr><td class="method">Window:OpenPalette()</td><td>Opens the <a href="#palette">command palette</a>.</td></tr>
+    <tr><td class="method">Window:Reveal(element)</td><td>Selects the element's tab, scrolls to it and flashes it.</td></tr>
+    <tr><td class="method">Window:Pin(element, position) / Unpin(element)</td><td>Pins or unpins an element as a floating widget.</td></tr>
+    <tr><td class="method">Window:SaveConfig / LoadConfig / …</td><td>See <a href="#configs">Configs</a>.</td></tr>
+    <tr><td class="method">Window:Destroy()</td><td>Removes the window.</td></tr>
+  </table></div>
+  <h3>Signals</h3>
+<div class="code"><pre>Window.VisibilityChanged:Connect(function(visible)
+    print("Window visible:", visible)
+end)
+
+Window.TabChanged:Connect(function(tab)
+    print("Now on tab:", tab.Name)
+end)</pre></div>
+</section>
+
+<!-- ================================================================ TAB -->
+<section id="tab">
+  <h2>Tab</h2>
+  <p>A sidebar entry and its scrolling page. Without an icon (or with an unknown one), the tab shows its initial in a small badge.</p>
+<div class="code"><pre>local Main = Window:Tab({ Name = "Main", Icon = "home" })
+local Combat = Window:Tab("Combat", { Icon = "sword" })
+
+Main:Button("Hello")   -- elements can be added straight onto a tab
+Combat:Select()        -- switch to this tab</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Name</code></td><td>Tab name. Default <code>"Tab N"</code>.</td></tr>
+    <tr><td><code>Icon</code></td><td>Lucide icon name or asset id.</td></tr>
+    <tr><td class="method">Tab:Section(options)</td><td>Creates a section. Alias <code>CreateSection</code>.</td></tr>
+    <tr><td class="method">Tab:Select()</td><td>Switches the window to this tab.</td></tr>
+    <tr><td class="method">Tab:SetVisible(visible)</td><td>Shows or hides the tab in the sidebar.</td></tr>
+    <tr><td class="method">Tab:Destroy()</td><td>Removes the tab and everything in it.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ SECTION -->
+<section id="section">
+  <h2>Section</h2>
+  <p>A titled card that groups elements. Elements created directly on a tab go into its most recent section, and an untitled section is made automatically if there is none.</p>
+<div class="code"><pre>local Movement = Main:Section("Movement")
+Movement:Toggle("Fly")
+Movement:Slider({ Name = "Fly speed", Min = 1, Max = 10 })
+
+-- Or keep adding to the tab: these land in the latest section.
+Main:Section("Teleports")
+Main:Button("Spawn")
+Main:Button("Shop")</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td class="method">Section:SetName(name)</td><td>Renames the section. Alias <code>Set</code>.</td></tr>
+    <tr><td class="method">Section:SetVisible(visible)</td><td>Shows or hides the whole section.</td></tr>
+    <tr><td class="method">Section:Destroy()</td><td>Removes the section and its elements.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ ELEMENT -->
+<section id="element">
+  <h2>Common element API</h2>
+  <p>Every element shares these options and methods. All methods return the element, so they can be chained.</p>
+  <h3>Shared options</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Option</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>Name</code></td><td class="type">string</td><td>Title shown on the row.</td></tr>
+    <tr><td><code>Description</code></td><td class="type">string</td><td>Smaller text under the title.</td></tr>
+    <tr><td><code>Callback</code></td><td class="type">function</td><td>Runs when the value changes (or the button is pressed).</td></tr>
+    <tr><td><code>Flag</code></td><td class="type">string</td><td>Stores the value in <code>Aether.Flags[flag]</code>. Also the config id.</td></tr>
+    <tr><td><code>Tooltip</code></td><td class="type">string</td><td>Text shown when hovering the element.</td></tr>
+    <tr><td><code>Disabled</code></td><td class="type">boolean</td><td>Starts disabled.</td></tr>
+    <tr><td><code>DisabledReason</code></td><td class="type">string</td><td>Tooltip shown while disabled.</td></tr>
+    <tr><td><code>Visible</code></td><td class="type">boolean</td><td><code>false</code> starts hidden.</td></tr>
+    <tr><td><code>Save</code></td><td class="type">boolean</td><td><code>false</code> keeps this element out of configs.</td></tr>
+  </table></div>
+  <h3>Shared methods</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td class="method">:OnChanged(fn)</td><td>Adds another change handler.</td></tr>
+    <tr><td class="method">:SetTitle(text)</td><td>Changes the title.</td></tr>
+    <tr><td class="method">:SetDescription(text)</td><td>Changes the description. Alias <code>:Description(text)</code>.</td></tr>
+    <tr><td class="method">:Tooltip(text)</td><td>Sets the hover tooltip.</td></tr>
+    <tr><td class="method">:Flag(name)</td><td>Sets or changes the flag.</td></tr>
+    <tr><td class="method">:SetVisible(visible)</td><td>Shows or hides the element.</td></tr>
+    <tr><td class="method">:SetDisabled(disabled, reason)</td><td>Greys the element out and blocks input.</td></tr>
+    <tr><td class="method">:Reset()</td><td>Goes back to the default value.</td></tr>
+    <tr><td class="method">:Pin(position) / :Unpin()</td><td>Turns the element into a floating widget (Pinnable elements).</td></tr>
+    <tr><td class="method">:Flash()</td><td>Briefly highlights the row.</td></tr>
+    <tr><td class="method">:GetId()</td><td>The flag, or <code>"Tab/Section/Name"</code>.</td></tr>
+    <tr><td class="method">:Destroy()</td><td>Removes the element.</td></tr>
+  </table></div>
+  <p>Elements also expose <code>element.Value</code> and a <code>element.Changed</code> signal.</p>
+<div class="code"><pre>local godMode = Tab:Toggle("God mode")
+    :Description("Can't take damage")
+    :Tooltip("Only works in some games")
+    :Flag("GodMode")
+    :OnChanged(function(on)
+        print("God mode:", on)
+    end)
+
+godMode:SetDisabled(true, "Not supported in this game")</pre></div>
+  <div class="note">Right-click an element (or long-press on mobile) to open its menu: pin to screen, copy value, reset, add a key bind and more.</div>
+</section>
+
+<!-- ================================================================ BUTTON -->
+<section id="button">
+  <h2>Button</h2>
+  <p>Runs a function when clicked. Can have a key bind.</p>
+<div class="code"><pre>Tab:Button({
+    Name = "Rejoin",
+    Description = "Reconnects to this server",
+    Callback = function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId)
+    end,
+})
+
+-- Chained style, with a key bind:
+Tab:Button("Reset character"):OnClick(function()
+    game.Players.LocalPlayer.Character:BreakJoints()
+end):Keybind("R")</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Keybind</code></td><td>Key that presses the button, e.g. <code>"R"</code>.</td></tr>
+    <tr><td class="method">:OnClick(fn)</td><td>Adds a click handler.</td></tr>
+    <tr><td class="method">:Press()</td><td>Presses the button from code.</td></tr>
+    <tr><td class="method">:Set(text)</td><td>Changes the button text.</td></tr>
+    <tr><td class="method">:Keybind(key) / :GetKeybind()</td><td>Sets or reads the key bind.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ TOGGLE -->
+<section id="toggle">
+  <h2>Toggle</h2>
+  <p>An on/off switch. The callback receives a boolean.</p>
+<div class="code"><pre>local fly = Tab:Toggle({
+    Name = "Fly",
+    Default = false,
+    Keybind = "F",
+    Flag = "Fly",
+    Callback = function(on)
+        print("Fly is now", on)
+    end,
+})
+
+fly:Set(true)     -- turn it on (fires the callback)
+fly:Toggle()      -- flip it
+print(fly:Get())  -- current state</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting state. Default <code>false</code>. (Also <code>Value</code>, <code>CurrentValue</code>.)</td></tr>
+    <tr><td><code>Keybind</code></td><td>Key that flips the toggle.</td></tr>
+    <tr><td class="method">:Set(value, silent)</td><td>Sets the state. <code>silent = true</code> skips the callback.</td></tr>
+    <tr><td class="method">:Toggle()</td><td>Flips the state.</td></tr>
+    <tr><td class="method">:Get()</td><td>Returns the state.</td></tr>
+    <tr><td class="method">:Keybind(key) / :GetKeybind()</td><td>Sets or reads the key bind.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ SLIDER -->
+<section id="slider">
+  <h2>Slider</h2>
+  <p>Pick a number in a range.</p>
+<div class="code"><pre>local speed = Tab:Slider({
+    Name = "WalkSpeed",
+    Min = 16,
+    Max = 200,
+    Default = 16,
+    Increment = 1,
+    Suffix = " studs",
+    Callback = function(value)
+        game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = value
+    end,
+})
+
+-- Runs once the user lets go (good for expensive work):
+speed:OnRelease(function(value)
+    print("Settled on", value)
+end)
+
+speed:SetRange(16, 500)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Min</code> / <code>Max</code></td><td>The range. (Also <code>Range = { min, max }</code>.)</td></tr>
+    <tr><td><code>Default</code></td><td>Starting value. (Also <code>Value</code>, <code>CurrentValue</code>.)</td></tr>
+    <tr><td><code>Increment</code></td><td>Step size. (Also <code>Step</code>, or <code>Rounding</code> for decimal places.)</td></tr>
+    <tr><td><code>Suffix</code></td><td>Text after the number, e.g. <code>" studs"</code> or <code>"%"</code>.</td></tr>
+    <tr><td class="method">:Set(value, silent)</td><td>Sets the value (snapped to the increment).</td></tr>
+    <tr><td class="method">:Get()</td><td>Returns the value.</td></tr>
+    <tr><td class="method">:SetRange(min, max)</td><td>Changes the range and keeps the value inside it.</td></tr>
+    <tr><td class="method">:OnRelease(fn)</td><td>Runs when the user releases the slider.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ DROPDOWN -->
+<section id="dropdown">
+  <h2>Dropdown</h2>
+  <p>Pick one option, or several with <code>Multi = true</code>. Single-select passes a string (or <code>nil</code>); multi-select passes an array.</p>
+<div class="code"><pre>local weapon = Tab:Dropdown({
+    Name = "Weapon",
+    Options = { "Sword", "Bow", "Staff" },
+    Default = "Sword",
+    Callback = function(choice)
+        print("Picked", choice)
+    end,
+})
+
+local function playerNames()
+    local names = {}
+    for _, p in ipairs(game.Players:GetPlayers()) do
+        table.insert(names, p.Name)
+    end
+    return names
+end
+
+local targets = Tab:Dropdown({
+    Name = "Targets",
+    Options = playerNames(),
+    Multi = true,
+    Callback = function(list)
+        print("Targets:", table.concat(list, ", "))
+    end,
+})
+
+-- Keep the list fresh:
+game.Players.PlayerAdded:Connect(function()
+    targets:SetOptions(playerNames(), true)
+end)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Options</code></td><td>List of choices. (Also <code>Values</code>, <code>List</code>.)</td></tr>
+    <tr><td><code>Default</code></td><td>Starting choice (or a list for multi). (Also <code>Value</code>, <code>CurrentOption</code>.)</td></tr>
+    <tr><td><code>Multi</code></td><td>Allow several choices. (Also <code>Multiple</code>, <code>MultipleOptions</code>.)</td></tr>
+    <tr><td><code>AllowNone</code></td><td>Lets a single-select be cleared.</td></tr>
+    <tr><td><code>Placeholder</code></td><td>Text when nothing is selected. Default <code>"Select..."</code>.</td></tr>
+    <tr><td><code>Search</code></td><td>Show a search box. Default: shown when there are more than 7 options.</td></tr>
+    <tr><td><code>MaxVisible</code></td><td>Rows visible before scrolling. Default 6.</td></tr>
+    <tr><td><code>Width</code></td><td>Width of the control.</td></tr>
+    <tr><td class="method">:Set(value, silent) / :Get()</td><td>Sets or reads the selection.</td></tr>
+    <tr><td class="method">:SetOptions(list, keepSelection)</td><td>Replaces the options. Alias <code>Refresh</code>.</td></tr>
+    <tr><td class="method">:Add(option) / :Remove(option) / :Clear()</td><td>Edits the option list.</td></tr>
+    <tr><td class="method">:Open() / :Close()</td><td>Opens or closes the list.</td></tr>
+    <tr><td class="method">:Cycle(direction)</td><td>Selects the next (1) or previous (-1) option.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ INPUT -->
+<section id="input">
+  <h2>Input</h2>
+  <p>A text box. By default the callback runs when the user finishes typing.</p>
+<div class="code"><pre>Tab:Input({
+    Name = "Target",
+    Placeholder = "Username",
+    Callback = function(text)
+        print("Target set to", text)
+    end,
+})
+
+Tab:Input({
+    Name = "Amount",
+    Numeric = true,      -- only numbers
+    Live = true,         -- fire on every keystroke
+    MaxLength = 6,
+    Callback = function(text)
+        print(tonumber(text))
+    end,
+})</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting text. (Also <code>Value</code>, <code>Text</code>, <code>CurrentValue</code>.)</td></tr>
+    <tr><td><code>Placeholder</code></td><td>Hint text. (Also <code>PlaceholderText</code>.)</td></tr>
+    <tr><td><code>Numeric</code></td><td>Keeps only numbers.</td></tr>
+    <tr><td><code>Live</code></td><td>Fires on every keystroke. (Or <code>Finished = false</code>.)</td></tr>
+    <tr><td><code>MaxLength</code></td><td>Maximum characters.</td></tr>
+    <tr><td><code>ClearOnFocus</code></td><td>Empties the box when clicked.</td></tr>
+    <tr><td><code>Width</code></td><td>Width of the box.</td></tr>
+    <tr><td class="method">:Set(text, silent) / :Get()</td><td>Sets or reads the text.</td></tr>
+    <tr><td class="method">:Focus()</td><td>Focuses the box.</td></tr>
+    <tr><td class="method">:SetPlaceholder(text)</td><td>Changes the hint text.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ KEYBIND -->
+<section id="keybind">
+  <h2>Keybind</h2>
+  <p>A rebindable key. Click the key chip to rebind: the next key press becomes the bind, <code>Escape</code> cancels and <code>Backspace</code> clears.</p>
+<div class="code"><pre>-- Press: runs on every press
+Tab:Keybind({
+    Name = "Dash",
+    Default = "Q",
+    Callback = function()
+        print("Dash!")
+    end,
+})
+
+-- Toggle: each press flips a state
+Tab:Keybind({
+    Name = "Auto farm",
+    Default = "G",
+    Mode = "Toggle",
+    Callback = function(on)
+        print("Auto farm:", on)
+    end,
+})
+
+-- Hold: true on press, false on release
+Tab:Keybind({
+    Name = "Aim",
+    Default = "MouseButton2",
+    Mode = "Hold",
+    Callback = function(holding)
+        print("Aiming:", holding)
+    end,
+}):OnBindChanged(function(key)
+    print("Aim is now bound to", key and key.Name or "nothing")
+end)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting key, e.g. <code>"Q"</code> or <code>Enum.KeyCode.Q</code>. (Also <code>Key</code>, <code>Value</code>, <code>CurrentKeybind</code>.)</td></tr>
+    <tr><td><code>Mode</code></td><td><code>"Press"</code> (default), <code>"Toggle"</code> or <code>"Hold"</code>. (<code>HoldToInteract = true</code> means Hold.)</td></tr>
+    <tr><td><code>AllowMouse</code></td><td>Mouse buttons 2 and 3 can be bound. Default <code>true</code>.</td></tr>
+    <tr><td class="method">:Set(key, silent) / :Get()</td><td>Sets or reads the key. <code>:Set(nil)</code> clears it.</td></tr>
+    <tr><td class="method">:Listen()</td><td>Waits for the user to press a new key.</td></tr>
+    <tr><td class="method">:OnBindChanged(fn)</td><td>Runs when the user picks a different key.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ COLORPICKER -->
+<section id="colorpicker">
+  <h2>ColorPicker</h2>
+  <p>A color picker with a hex field and a rainbow mode. Adding <code>Transparency</code> shows a transparency bar and the callback also receives it.</p>
+<div class="code"><pre>Tab:ColorPicker({
+    Name = "ESP color",
+    Default = Color3.fromRGB(139, 92, 246),
+    Callback = function(color)
+        print(color)
+    end,
+})
+
+local fill = Tab:ColorPicker({
+    Name = "Fill",
+    Default = Color3.fromRGB(255, 80, 80),
+    Transparency = 0.2,
+    Callback = function(color, transparency)
+        print(color, transparency)
+    end,
+})
+
+fill:SetRainbow(true)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting <code>Color3</code>. (Also <code>Color</code>, <code>Value</code>.)</td></tr>
+    <tr><td><code>Transparency</code></td><td>Starting transparency, shows the transparency bar. (Also <code>Alpha</code>.)</td></tr>
+    <tr><td><code>Rainbow</code></td><td>Start in rainbow mode.</td></tr>
+    <tr><td class="method">:Set(color, transparency, silent)</td><td>Sets the color.</td></tr>
+    <tr><td class="method">:Get()</td><td>Returns the color (and transparency).</td></tr>
+    <tr><td class="method">:SetRainbow(enabled)</td><td>Turns rainbow mode on or off.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ LABEL -->
+<section id="label">
+  <h2>Label</h2>
+  <p>A single line of text.</p>
+<div class="code"><pre>local status = Tab:Label("Status: ready")
+
+task.spawn(function()
+    while task.wait(1) do
+        status:SetText("Players: " .. #game.Players:GetPlayers())
+    end
+end)</pre></div>
+  <p><span class="method">:SetText(text)</span> changes the text (alias <code>:Set</code>).</p>
+</section>
+
+<!-- ================================================================ PARAGRAPH -->
+<section id="paragraph">
+  <h2>Paragraph</h2>
+  <p>A title with a longer block of text.</p>
+<div class="code"><pre>local info = Tab:Paragraph({
+    Title = "Welcome",
+    Content = "Thanks for using my script. Press RightControl to hide the UI.",
+})
+
+info:Set({ Title = "Updated", Content = "New content here." })
+info:SetContent("Just change the body.")</pre></div>
+</section>
+
+<!-- ================================================================ DIVIDER -->
+<section id="divider">
+  <h2>Divider</h2>
+  <p>A thin line between groups of elements.</p>
+<div class="code"><pre>Tab:Button("One")
+Tab:Divider()
+Tab:Button("Two")</pre></div>
+</section>
+
+<!-- ================================================================ NOTIFICATIONS -->
+<section id="notifications">
+  <h2>Notifications</h2>
+  <p>Toasts stacked bottom-right on desktop and top-center on touch devices. Hovering pauses the timer.</p>
+<div class="code"><pre>Aether:Notify({
+    Title = "Saved",
+    Content = "Config 'Legit' saved.",
+    Type = "Success",   -- Info (default), Success, Warning, Error
+    Duration = 4,       -- seconds; false keeps it until closed
+})
+
+-- With action buttons:
+Aether:Notify({
+    Title = "Teleported",
+    Content = "You were moved to spawn.",
+    Actions = {
+        { Name = "Undo", Callback = function() print("undo") end },
+    },
+})
+
+-- Update or dismiss it later:
+local note = Aether:Notify({ Title = "Farming...", Duration = false })
+task.wait(3)
+note:Update({ Title = "Done!", Type = "Success", Duration = 3 })</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option</th><th>Description</th></tr>
+    <tr><td><code>Title</code></td><td>Heading. (Also <code>Name</code>.)</td></tr>
+    <tr><td><code>Content</code></td><td>Body text. (Also <code>Description</code>, <code>Text</code>.)</td></tr>
+    <tr><td><code>Type</code></td><td><code>"Info"</code>, <code>"Success"</code>, <code>"Warning"</code> or <code>"Error"</code>.</td></tr>
+    <tr><td><code>Duration</code></td><td>Seconds. Default depends on text length. <code>false</code> never expires.</td></tr>
+    <tr><td><code>Icon</code></td><td>Custom icon. (Also <code>Image</code>.)</td></tr>
+    <tr><td><code>Actions</code></td><td>List of <code>{ Name, Callback }</code> buttons.</td></tr>
+  </table></div>
+  <p>The returned notification has <span class="method">:Update(options)</span>, <span class="method">:Dismiss()</span> (alias <code>Close</code>) and a <code>Dismissed</code> signal.</p>
+</section>
+
+<!-- ================================================================ DIALOGS -->
+<section id="dialogs">
+  <h2>Dialogs</h2>
+  <p>A modal box with buttons. Clicking the dimmed background cancels unless <code>Dismissible = false</code>.</p>
+<div class="code"><pre>Window:Dialog({
+    Title = "Unload?",
+    Content = "This removes the interface.",
+    Buttons = {
+        { Name = "Cancel" },
+        { Name = "Unload", Danger = true, Callback = function()
+            Aether:Unload()
+        end },
+    },
+})
+
+Window:Dialog({
+    Title = "Welcome!",
+    Content = "Read the rules before using this script.",
+    Dismissible = false,
+    Buttons = {
+        { Name = "I understand", Primary = true },
+    },
+})</pre></div>
+  <p>Button styles: <code>Primary = true</code> uses the accent color, <code>Danger = true</code> uses red.</p>
+</section>
+
+<!-- ================================================================ KEY SYSTEM -->
+<section id="keysystem">
+  <h2>Key system</h2>
+  <p>An optional key prompt. It yields until a valid key is entered (<code>true</code>) or the prompt is closed (<code>false</code>).</p>
+<div class="code"><pre>local unlocked = Aether:KeySystem({
+    Title = "My Hub",
+    Subtitle = "Key required",
+    Note = "Join the Discord to get a key.",
+    Link = "https://example.com/key",   -- "Get key" copies this
+    Keys = { "AETHER-1234" },
+    SaveKey = true,                     -- remember a valid key on this device
+})
+if not unlocked then return end
+
+local Window = Aether:Window({ Name = "My Hub" })</pre></div>
+  <p>Check keys your own way with <code>Check</code>:</p>
+<div class="code"><pre>Aether:KeySystem({
+    Title = "My Hub",
+    Check = function(key)
+        return key:sub(1, 7) == "AETHER-" and #key == 11
+    end,
+})</pre></div>
+  <div class="note">Aether never contacts a server itself: keys are checked against <code>Keys</code> or your own <code>Check</code> function.</div>
+</section>
+
+<!-- ================================================================ FLAGS -->
+<section id="flags">
+  <h2>Flags</h2>
+  <p>Give an element a <code>Flag</code> and its value is always available in <code>Aether.Flags</code>. The element itself is in <code>Aether.Options</code>.</p>
+<div class="code"><pre>Tab:Toggle({ Name = "Auto farm", Flag = "AutoFarm" })
+Tab:Slider({ Name = "Delay", Min = 0, Max = 5, Default = 1, Flag = "FarmDelay" })
+
+task.spawn(function()
+    while task.wait(Aether.Flags.FarmDelay) do
+        if Aether.Flags.AutoFarm then
+            print("farming...")
+        end
+    end
+end)
+
+-- Change an element from anywhere:
+Aether.Options.AutoFarm:Set(false)</pre></div>
+</section>
+
+<!-- ================================================================ CONFIGS -->
+<section id="configs">
+  <h2>Configs</h2>
+  <p>Every element with a value is saved automatically, keyed by its <code>Flag</code>, or by <code>"Tab/Section/Name"</code> when it has none. Opt out per element with <code>Save = false</code>. Values for elements that don't exist yet are applied the moment the element is created, so loading never depends on timing.</p>
+<div class="code"><pre>Window:SaveConfig("Legit")
+Window:LoadConfig("Legit")
+Window:DeleteConfig("Legit")
+print(Window:ListConfigs())   -- { "Legit", ... }
+
+Window:SetAutoload("Legit")   -- load this one on every start
+
+-- Share codes:
+local code = Window:ExportConfig()
+setclipboard(code)
+Window:ImportConfig(code)</pre></div>
+  <p>Or save everything automatically with <code>AutoSave = true</code> on the window.</p>
+  <h4>Files (executor workspace)</h4>
+<div class="code"><pre>Aether/&lt;Window&gt;/configs/&lt;name&gt;.json
+Aether/&lt;Window&gt;/autoload.txt
+Aether/&lt;Window&gt;/interface.json    -- theme, toggle key, pinned widgets...</pre></div>
+</section>
+
+<!-- ================================================================ SETTINGS -->
+<section id="settings">
+  <h2>Settings tab</h2>
+  <p>One line adds a ready-made tab. Nothing in it ends up inside configs.</p>
+<div class="code"><pre>Window:SettingsTab()</pre></div>
+  <div class="cards">
+    <div class="card"><b>Interface</b><span>Theme, toggle key, reduced motion.</span></div>
+    <div class="card"><b>Configs</b><span>Save, load, delete, autoload.</span></div>
+    <div class="card"><b>Share</b><span>Copy / paste config codes and theme codes.</span></div>
+    <div class="card"><b>Session</b><span>Version info and unload.</span></div>
+  </div>
+</section>
+
+<!-- ================================================================ THEMES -->
+<section id="themes">
+  <h2>Themes</h2>
+  <p>Switching themes animates every color to the new palette.</p>
+  <div class="swatches">
+    <span class="swatch"><i style="background:linear-gradient(135deg,#8B5CF6,#3B82F6)"></i>Aether</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#6366F1,#22D3EE)"></i>Midnight</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#22D3EE,#14B8A6)"></i>Ocean</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#F43F5E,#FB923C)"></i>Rose</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#10B981,#84CC16)"></i>Emerald</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#FAFAFA,#A1A1AA)"></i>Mono</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#7C3AED,#F5F5FA)"></i>Light</span>
+  </div>
+<div class="code"><pre>Aether:SetTheme("Ocean")
+
+-- Tweak just a few colors:
+Aether:SetTheme({ Accent = Color3.fromRGB(255, 120, 80) })
+
+-- Register your own theme:
+Aether:RegisterTheme("Sunset", {
+    Accent = Color3.fromHex("#F97316"),
+    AccentSecondary = Color3.fromHex("#EC4899"),
+    Background = Color3.fromHex("#140B0B"),
+})
+Aether:SetTheme("Sunset")
+
+print(Aether:GetThemes())
+
+-- Share the current theme as a code:
+local code = Aether:ExportTheme()   -- "AT1:..."
+local ok, err = Aether:ImportTheme(code)</pre></div>
+  <h4>Theme keys</h4>
+  <p><code>Accent</code>, <code>AccentSecondary</code>, <code>OnAccent</code>, <code>Background</code>, <code>BackgroundTransparency</code>, <code>Element</code>, <code>ElementTransparency</code>, <code>ElementHover</code>, <code>HoverTransparency</code>, <code>IndicatorTransparency</code>, <code>Control</code>, <code>Input</code>, <code>InputTransparency</code>, <code>Stroke</code>, <code>StrokeTransparency</code>, <code>Divider</code>, <code>DividerTransparency</code>, <code>Text</code>, <code>TextDim</code>, <code>TextMuted</code>, <code>Success</code>, <code>Warning</code>, <code>Danger</code>, <code>Shadow</code>, <code>GlowTransparency</code>. Missing keys fall back to the default Aether theme.</p>
+</section>
+
+<!-- ================================================================ PALETTE -->
+<section id="palette">
+  <h2>Command palette</h2>
+  <p>Press <code>Ctrl + K</code> (or the search button in the topbar) to fuzzy-search every element, tab and built-in command. Toggles flip in place, buttons press, and other elements are revealed. It even works while the window is hidden.</p>
+<div class="code"><pre>Window:OpenPalette()
+
+-- Different key, or turn it off:
+Aether:Window({ Name = "My Script", PaletteKey = "P" })
+Aether:Window({ Name = "My Script", PaletteKey = false })</pre></div>
+</section>
+
+<!-- ================================================================ PINS -->
+<section id="pins">
+  <h2>Pinned widgets</h2>
+  <p>Small floating copies of elements that stay on screen (even while the window is hidden) and stay in sync with the original. Pin by dragging an element out of the window, from the right-click / long-press menu, or from code. Pins are remembered between sessions.</p>
+<div class="code"><pre>local fly = Tab:Toggle("Fly")
+fly:Pin()                          -- default position
+fly:Pin(Vector2.new(40, 200))      -- screen pixels
+fly:Unpin()</pre></div>
+</section>
+
+<!-- ================================================================ ICONS -->
+<section id="icons">
+  <h2>Icons</h2>
+  <p>Anywhere an <code>Icon</code> is accepted you can use a <a href="https://lucide.dev/icons/" target="_blank" rel="noopener">Lucide</a> icon name, a numeric asset id, or a full <code>rbxassetid://</code> string. Unknown names fall back gracefully.</p>
+<div class="code"><pre>Window:Tab({ Name = "Combat", Icon = "sword" })
+Window:Tab({ Name = "Custom", Icon = 1234567890 })
+Window:Tab({ Name = "Custom 2", Icon = "rbxassetid://1234567890" })</pre></div>
+</section>
+
+<!-- ================================================================ LIBRARY -->
+<section id="library">
+  <h2>Library API</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Member</th><th>Description</th></tr>
+    <tr><td class="method">Aether:Window(options)</td><td>Creates a window. Alias <code>CreateWindow</code>.</td></tr>
+    <tr><td class="method">Aether:Notify(options)</td><td>Shows a notification.</td></tr>
+    <tr><td class="method">Aether:KeySystem(options)</td><td>Shows the key prompt and yields.</td></tr>
+    <tr><td class="method">Aether:SetTheme(theme)</td><td>Sets a theme by name or table.</td></tr>
+    <tr><td class="method">Aether:GetThemes()</td><td>Lists theme names.</td></tr>
+    <tr><td class="method">Aether:RegisterTheme(name, theme)</td><td>Adds a theme.</td></tr>
+    <tr><td class="method">Aether:ExportTheme() / ImportTheme(code)</td><td>Theme share codes.</td></tr>
+    <tr><td class="method">Aether:SetVisibility(visible)</td><td>Shows or hides every window.</td></tr>
+    <tr><td class="method">Aether:IsVisible()</td><td>Is the first window visible?</td></tr>
+    <tr><td class="method">Aether:SetReducedMotion(enabled)</td><td>Turns every animation off.</td></tr>
+    <tr><td class="method">Aether:RegisterElement(name, class)</td><td>Adds a custom element type.</td></tr>
+    <tr><td class="method">Aether:LoadConfiguration()</td><td>Restores the auto-saved config (Rayfield style).</td></tr>
+    <tr><td class="method">Aether:Unload()</td><td>Removes every window, widget and notification. Alias <code>Destroy</code>.</td></tr>
+    <tr><td><code>Aether.Flags</code> / <code>Aether.Options</code></td><td>Flag values / flagged elements.</td></tr>
+    <tr><td><code>Aether.Unloaded</code></td><td>Signal fired on unload.</td></tr>
+    <tr><td><code>Aether.Version</code></td><td><code>"0.1.0"</code></td></tr>
+  </table></div>
+<div class="code"><pre>Aether.Unloaded:Connect(function()
+    -- clean up your own connections here
+    print("Aether unloaded")
+end)</pre></div>
+</section>
+
+<!-- ================================================================ CUSTOM -->
+<section id="custom">
+  <h2>Custom elements</h2>
+  <p>Extend the base <code>Aether.Element</code> class and register it. Every tab and section then gets a method with that name.</p>
+<div class="code"><pre>local Element = Aether.Element
+
+local Counter = Element.extend("Counter")
+Counter.Saveable = true
+
+function Counter.new(section, options)
+    local self = setmetatable({}, Counter)
+    Element.init(self, section, options, { Clickable = true })
+    self:_publish(options.Default or 0)
+    return Element._ready(self)
+end
+
+-- Clicking the row counts up.
+function Counter:_onClick()
+    self:Set(self.Value + 1)
+end
+
+function Counter:Set(value, silent)
+    self:_publish(value)
+    self:SetDescription("Count: " .. value)
+    if not silent then
+        self.Changed:Fire(value)
+    end
+    return self
+end
+
+Aether:RegisterElement("Counter", Counter)
+
+Tab:Counter({ Name = "Clicks", Callback = print })</pre></div>
+</section>
+
+<!-- ================================================================ RAYFIELD -->
+<section id="rayfield">
+  <h2>Rayfield compatibility</h2>
+  <p>Scripts written for Rayfield run on Aether after changing the loadstring line. Window options like <code>ConfigurationSaving</code>, <code>ToggleUIKeybind</code>, <code>KeySystem</code> + <code>KeySettings</code> and Rayfield theme names are translated, and the <code>Create*</code> methods keep Rayfield's callback shapes.</p>
+<div class="code"><pre>local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/RedScaleR/Aether/main/Aether.lua"))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "My Hub",
+    ConfigurationSaving = { Enabled = true, FolderName = "MyHub", FileName = "config" },
+})
+
+local Tab = Window:CreateTab("Main", "home")
+
+Tab:CreateToggle({
+    Name = "Fly",
+    CurrentValue = false,
+    Flag = "Fly",
+    Callback = function(value) end,
+})
+
+Tab:CreateSlider({
+    Name = "Speed",
+    Range = { 16, 200 },
+    Increment = 1,
+    CurrentValue = 16,
+    Flag = "Speed",
+    Callback = function(value) end,
+})
+
+Rayfield:LoadConfiguration()</pre></div>
+  <div class="note warn"><code>GrabKeyFromSite</code> isn't supported, since Aether never downloads anything on its own. Put the keys in <code>Key</code>, or use <code>Aether:KeySystem</code> with a <code>Check</code> function.</div>
+</section>
+
+  </main>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="palette" role="dialog" aria-label="Search the docs">
+    <div class="palette-input">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="query" placeholder="Search elements, options, features…" autocomplete="off" spellcheck="false">
+      <span class="kbd">Esc</span>
+    </div>
+    <div class="results" id="results"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+(function () {
+  // ---------------------------------------------------------------- Themes (Core/Theme presets)
+  var AETHER = {
+    Accent: "#8B5CF6", AccentSecondary: "#3B82F6", OnAccent: "#FFFFFF",
+    Background: "#0D0D16", BackgroundTransparency: 0.06,
+    Element: "#FFFFFF", ElementTransparency: 0.965, ElementHover: "#FFFFFF", HoverTransparency: 0.945,
+    IndicatorTransparency: 0.84, Input: "#FFFFFF", InputTransparency: 0.95,
+    Stroke: "#FFFFFF", StrokeTransparency: 0.9, Divider: "#FFFFFF", DividerTransparency: 0.93,
+    Text: "#F4F4F8", TextDim: "#A6A6BA", TextMuted: "#6F6F86",
+    Success: "#22C55E", Warning: "#F59E0B", Danger: "#F43F5E", Shadow: "#000000", GlowTransparency: 0.82
+  };
+  var PRESETS = {
+    Aether: {},
+    Midnight: { Accent: "#6366F1", AccentSecondary: "#22D3EE", Background: "#0A0E1A" },
+    Ocean: { Accent: "#22D3EE", AccentSecondary: "#14B8A6", OnAccent: "#04161A", Background: "#07141A" },
+    Rose: { Accent: "#F43F5E", AccentSecondary: "#FB923C", Background: "#150B0F" },
+    Emerald: { Accent: "#10B981", AccentSecondary: "#84CC16", OnAccent: "#04150E", Background: "#08130F" },
+    Mono: { Accent: "#FAFAFA", AccentSecondary: "#A1A1AA", OnAccent: "#0B0B0C", Background: "#0B0B0C", GlowTransparency: 0.9 },
+    Light: {
+      Accent: "#7C3AED", AccentSecondary: "#2563EB", Background: "#F5F5FA", BackgroundTransparency: 0.04,
+      Element: "#FFFFFF", ElementTransparency: 0.25, ElementHover: "#000000", HoverTransparency: 0.95,
+      IndicatorTransparency: 0.88, Input: "#000000", InputTransparency: 0.955,
+      Stroke: "#000000", StrokeTransparency: 0.9, Divider: "#000000", DividerTransparency: 0.92,
+      Text: "#15151D", TextDim: "#565669", TextMuted: "#8C8C9E", Shadow: "#1B1B3A", GlowTransparency: 0.86
+    }
+  };
+  function rgba(hex, transparency) {
+    var n = parseInt(hex.slice(1), 16);
+    return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + (1 - transparency).toFixed(3) + ")";
+  }
+  var currentTheme = "Aether";
+  function applyTheme(name, announce) {
+    if (!PRESETS[name]) name = "Aether";
+    currentTheme = name;
+    var t = Object.assign({}, AETHER, PRESETS[name]);
+    var light = name === "Light";
+    var s = document.documentElement.style;
+    s.setProperty("--accent", t.Accent);
+    s.setProperty("--accent-2", t.AccentSecondary);
+    s.setProperty("--on-accent", t.OnAccent);
+    s.setProperty("--bg", rgba(t.Background, t.BackgroundTransparency));
+    s.setProperty("--bg-solid", t.Background);
+    s.setProperty("--element", rgba(t.Element, t.ElementTransparency));
+    s.setProperty("--hover", rgba(t.ElementHover, t.HoverTransparency));
+    s.setProperty("--indicator", rgba(t.Accent, t.IndicatorTransparency));
+    s.setProperty("--input", rgba(t.Input, t.InputTransparency));
+    s.setProperty("--stroke", rgba(t.Stroke, t.StrokeTransparency));
+    s.setProperty("--divider", rgba(t.Divider, t.DividerTransparency));
+    s.setProperty("--text", t.Text);
+    s.setProperty("--text-dim", t.TextDim);
+    s.setProperty("--text-muted", t.TextMuted);
+    s.setProperty("--success", t.Success);
+    s.setProperty("--warning", t.Warning);
+    s.setProperty("--danger", t.Danger);
+    s.setProperty("--glow", rgba(t.Accent, t.GlowTransparency));
+    s.setProperty("--backdrop", light ? "#d9d9e6" : "#06060b");
+    s.setProperty("--code", light ? "rgba(0,0,0,0.045)" : "rgba(0,0,0,0.28)");
+    s.colorScheme = light ? "light" : "dark";
+    document.querySelectorAll(".swatch").forEach(function (el) { el.classList.toggle("on", el.dataset.theme === name); });
+    try { localStorage.setItem("aether-docs-theme", name); } catch (_) {}
+    if (announce) toast("Theme changed", name + " is now active.");
+  }
+
+  // ---------------------------------------------------------------- Tabs
+  var TABS = [
+    ["Getting started"],
+    ["intro", "Home", "house"],
+    ["install", "Installation", "download"],
+    ["quickstart", "Full example", "play"],
+    ["options-style", "Calling styles", "braces"],
+    ["Structure"],
+    ["window", "Window", "app-window"],
+    ["tab", "Tab", "panel-left"],
+    ["section", "Section", "rows-3"],
+    ["element", "Element API", "box"],
+    ["Elements"],
+    ["button", "Button", "mouse-pointer-click"],
+    ["toggle", "Toggle", "toggle-right"],
+    ["slider", "Slider", "sliders-horizontal"],
+    ["dropdown", "Dropdown", "list"],
+    ["input", "Input", "text-cursor-input"],
+    ["keybind", "Keybind", "keyboard"],
+    ["colorpicker", "ColorPicker", "palette"],
+    ["label", "Label", "type"],
+    ["paragraph", "Paragraph", "align-left"],
+    ["divider", "Divider", "minus"],
+    ["Features"],
+    ["notifications", "Notifications", "bell"],
+    ["dialogs", "Dialogs", "message-square"],
+    ["keysystem", "Key system", "key-round"],
+    ["flags", "Flags", "flag"],
+    ["configs", "Configs", "save"],
+    ["settings", "Settings tab", "settings"],
+    ["themes", "Themes", "paintbrush"],
+    ["palette", "Command palette", "search"],
+    ["pins", "Pinned widgets", "pin"],
+    ["icons", "Icons", "smile"],
+    ["Advanced"],
+    ["library", "Library API", "library"],
+    ["custom", "Custom elements", "puzzle"],
+    ["rayfield", "Rayfield compat", "repeat"]
+  ];
+  // Lucide icons (ISC license), bundled so the page works offline.
+  var ICONS = {"house": "<path d=\"M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8\" /><path d=\"M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\" />", "download": "<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\" /><polyline points=\"7 10 12 15 17 10\" /><line x1=\"12\" x2=\"12\" y1=\"15\" y2=\"3\" />", "play": "<polygon points=\"6 3 20 12 6 21 6 3\" />", "braces": "<path d=\"M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1\" /><path d=\"M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1\" />", "app-window": "<rect x=\"2\" y=\"4\" width=\"20\" height=\"16\" rx=\"2\" /><path d=\"M10 4v4\" /><path d=\"M2 8h20\" /><path d=\"M6 4v4\" />", "panel-left": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" /><path d=\"M9 3v18\" />", "rows-3": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" /><path d=\"M21 9H3\" /><path d=\"M21 15H3\" />", "box": "<path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\" /><path d=\"m3.3 7 8.7 5 8.7-5\" /><path d=\"M12 22V12\" />", "mouse-pointer-click": "<path d=\"M14 4.1 12 6\" /><path d=\"m5.1 8-2.9-.8\" /><path d=\"m6 12-1.9 2\" /><path d=\"M7.2 2.2 8 5.1\" /><path d=\"M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z\" />", "toggle-right": "<rect width=\"20\" height=\"12\" x=\"2\" y=\"6\" rx=\"6\" ry=\"6\" /><circle cx=\"16\" cy=\"12\" r=\"2\" />", "sliders-horizontal": "<line x1=\"21\" x2=\"14\" y1=\"4\" y2=\"4\" /><line x1=\"10\" x2=\"3\" y1=\"4\" y2=\"4\" /><line x1=\"21\" x2=\"12\" y1=\"12\" y2=\"12\" /><line x1=\"8\" x2=\"3\" y1=\"12\" y2=\"12\" /><line x1=\"21\" x2=\"16\" y1=\"20\" y2=\"20\" /><line x1=\"12\" x2=\"3\" y1=\"20\" y2=\"20\" /><line x1=\"14\" x2=\"14\" y1=\"2\" y2=\"6\" /><line x1=\"8\" x2=\"8\" y1=\"10\" y2=\"14\" /><line x1=\"16\" x2=\"16\" y1=\"18\" y2=\"22\" />", "list": "<path d=\"M3 12h.01\" /><path d=\"M3 18h.01\" /><path d=\"M3 6h.01\" /><path d=\"M8 12h13\" /><path d=\"M8 18h13\" /><path d=\"M8 6h13\" />", "text-cursor-input": "<path d=\"M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1\" /><path d=\"M13 20h-1a3 3 0 0 1-3-3 3 3 0 0 1-3 3H5\" /><path d=\"M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1\" /><path d=\"M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7\" /><path d=\"M9 7v10\" />", "keyboard": "<path d=\"M10 8h.01\" /><path d=\"M12 12h.01\" /><path d=\"M14 8h.01\" /><path d=\"M16 12h.01\" /><path d=\"M18 8h.01\" /><path d=\"M6 8h.01\" /><path d=\"M7 16h10\" /><path d=\"M8 12h.01\" /><rect width=\"20\" height=\"16\" x=\"2\" y=\"4\" rx=\"2\" />", "palette": "<circle cx=\"13.5\" cy=\"6.5\" r=\".5\" fill=\"currentColor\" /><circle cx=\"17.5\" cy=\"10.5\" r=\".5\" fill=\"currentColor\" /><circle cx=\"8.5\" cy=\"7.5\" r=\".5\" fill=\"currentColor\" /><circle cx=\"6.5\" cy=\"12.5\" r=\".5\" fill=\"currentColor\" /><path d=\"M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z\" />", "type": "<polyline points=\"4 7 4 4 20 4 20 7\" /><line x1=\"9\" x2=\"15\" y1=\"20\" y2=\"20\" /><line x1=\"12\" x2=\"12\" y1=\"4\" y2=\"20\" />", "align-left": "<path d=\"M15 12H3\" /><path d=\"M17 18H3\" /><path d=\"M21 6H3\" />", "minus": "<path d=\"M5 12h14\" />", "bell": "<path d=\"M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9\" /><path d=\"M10.3 21a1.94 1.94 0 0 0 3.4 0\" />", "message-square": "<path d=\"M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z\" />", "key-round": "<path d=\"M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z\" /><circle cx=\"16.5\" cy=\"7.5\" r=\".5\" fill=\"currentColor\" />", "flag": "<path d=\"M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z\" /><line x1=\"4\" x2=\"4\" y1=\"22\" y2=\"15\" />", "save": "<path d=\"M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z\" /><path d=\"M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7\" /><path d=\"M7 3v4a1 1 0 0 0 1 1h7\" />", "settings": "<path d=\"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z\" /><circle cx=\"12\" cy=\"12\" r=\"3\" />", "paintbrush": "<path d=\"m14.622 17.897-10.68-2.913\" /><path d=\"M18.376 2.622a1 1 0 1 1 3.002 3.002L17.36 9.643a.5.5 0 0 0 0 .707l.944.944a2.41 2.41 0 0 1 0 3.408l-.944.944a.5.5 0 0 1-.707 0L8.354 7.348a.5.5 0 0 1 0-.707l.944-.944a2.41 2.41 0 0 1 3.408 0l.944.944a.5.5 0 0 0 .707 0z\" /><path d=\"M9 8c-1.804 2.71-3.97 3.46-6.583 3.948a.507.507 0 0 0-.302.819l7.32 8.883a1 1 0 0 0 1.185.204C12.735 20.405 16 16.792 16 15\" />", "search": "<circle cx=\"11\" cy=\"11\" r=\"8\" /><path d=\"m21 21-4.3-4.3\" />", "pin": "<path d=\"M12 17v5\" /><path d=\"M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z\" />", "smile": "<circle cx=\"12\" cy=\"12\" r=\"10\" /><path d=\"M8 14s1.5 2 4 2 4-2 4-2\" /><line x1=\"9\" x2=\"9.01\" y1=\"9\" y2=\"9\" /><line x1=\"15\" x2=\"15.01\" y1=\"9\" y2=\"9\" />", "library": "<path d=\"m16 6 4 14\" /><path d=\"M12 6v14\" /><path d=\"M8 8v12\" /><path d=\"M4 4v16\" />", "puzzle": "<path d=\"M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z\" />", "repeat": "<path d=\"m17 2 4 4-4 4\" /><path d=\"M3 11v-1a4 4 0 0 1 4-4h14\" /><path d=\"m7 22-4-4 4-4\" /><path d=\"M21 13v1a4 4 0 0 1-4 4H3\" />", "circle-check": "<circle cx=\"12\" cy=\"12\" r=\"10\" /><path d=\"m9 12 2 2 4-4\" />"};
+  function icon(name, fallbackText) {
+    if (ICONS[name]) return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + ICONS[name] + "</svg>";
+    // Unknown icon: the initial in a rounded badge, like Aether's tabs.
+    return '<span class="badge">' + (fallbackText || "?").charAt(0).toUpperCase() + "</span>";
+  }
+
+  var tabsEl = document.getElementById("tabs");
+  var indicator = document.getElementById("indicator");
+  var pagesEl = document.getElementById("pages");
+  var pages = [], tabButtons = {};
+  var group = "";
+  TABS.forEach(function (entry) {
+    if (entry.length === 1) {
+      group = entry[0];
+      var label = document.createElement("div");
+      label.className = "group-label";
+      label.textContent = group;
+      tabsEl.appendChild(label);
+      return;
+    }
+    var id = entry[0], section = document.getElementById(id);
+    if (!section) return;
+    var btn = document.createElement("button");
+    btn.className = "tab";
+    btn.title = entry[1];
+    btn.innerHTML = '<span class="ico">' + icon(entry[2], entry[1]) + '</span><span class="name">' + entry[1] + "</span>";
+    btn.addEventListener("click", function () { go(id); });
+    tabsEl.appendChild(btn);
+    tabButtons[id] = btn;
+    pages.push({ id: id, name: entry[1], icon: entry[2], group: group, section: section });
+  });
+
+  // Prev / next buttons at the bottom of each page.
+  pages.forEach(function (page, i) {
+    var pager = document.createElement("div");
+    pager.className = "pager";
+    var prev = pages[i - 1], next = pages[i + 1];
+    if (prev) pager.innerHTML += '<button data-go="' + prev.id + '"><small>Previous</small><span>' + prev.name + "</span></button>";
+    if (next) pager.innerHTML += '<button class="next" data-go="' + next.id + '"><small>Next</small><span>' + next.name + "</span></button>";
+    page.section.appendChild(pager);
+  });
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-go]");
+    if (b) go(b.dataset.go);
+  });
+
+  function moveIndicator(id, instant) {
+    var btn = tabButtons[id];
+    if (!btn) return;
+    if (instant) indicator.style.transition = "none";
+    indicator.style.top = btn.offsetTop + "px";
+    if (instant) { indicator.offsetHeight; indicator.style.transition = ""; }
+    var r = btn.getBoundingClientRect(), p = tabsEl.getBoundingClientRect();
+    if (r.top < p.top || r.bottom > p.bottom) btn.scrollIntoView({ block: "nearest" });
+  }
+
+  var current = null;
+  function go(id, anchor, instant) {
+    var page = pages.filter(function (p) { return p.id === id; })[0];
+    if (!page) { id = pages[0].id; page = pages[0]; }
+    if (current !== id) {
+      pages.forEach(function (p) { p.section.classList.toggle("active", p.id === id); });
+      Object.keys(tabButtons).forEach(function (k) { tabButtons[k].classList.toggle("active", k === id); });
+      moveIndicator(id, instant);
+      current = id;
+      pagesEl.style.scrollBehavior = "auto";
+      pagesEl.scrollTop = 0;
+      pagesEl.style.scrollBehavior = "";
+    }
+    if (anchor) setTimeout(function () { anchor.scrollIntoView({ behavior: "smooth", block: "start" }); }, 30);
+    if (location.hash !== "#" + id) history.replaceState(null, "", "#" + id);
+  }
+  // In-page links like href="#themes" switch tabs.
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest('a[href^="#"]');
+    if (!a) return;
+    var id = a.getAttribute("href").slice(1);
+    if (tabButtons[id]) { e.preventDefault(); go(id); }
+  });
+  window.addEventListener("hashchange", function () { go(location.hash.slice(1)); });
+  window.addEventListener("resize", function () { if (current) moveIndicator(current, true); });
+
+  // ---------------------------------------------------------------- Tables -> section cards with element rows
+  document.querySelectorAll(".table-wrap").forEach(function (wrap) {
+    var body = document.createElement("div");
+    body.className = "table-body";
+    Array.prototype.forEach.call(wrap.querySelectorAll("tr"), function (tr) {
+      var cells = tr.querySelectorAll("td");
+      if (!cells.length) return;
+      var row = document.createElement("div");
+      row.className = "row";
+      var title = cells[0], desc = cells[cells.length - 1];
+      var type = cells.length === 3 ? cells[1].textContent : "";
+      row.innerHTML = '<div class="txt"><div class="t' + (title.classList.contains("method") ? " method" : "") + '">' + title.innerHTML +
+        '</div><div class="d">' + desc.innerHTML + "</div></div>" + (type ? '<span class="chip">' + type + "</span>" : "");
+      body.appendChild(row);
+    });
+    wrap.replaceWith(body);
+  });
+
+  // ---------------------------------------------------------------- Lua highlighting + copy
+  var KEYWORDS = /^(and|break|do|else|elseif|end|for|function|if|in|local|not|or|repeat|return|then|until|while|continue)$/;
+  var CONSTS = /^(true|false|nil|self)$/;
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function highlight(src) {
+    var out = "", i = 0, n = src.length;
+    while (i < n) {
+      var c = src[i], rest = src.slice(i), m;
+      if (rest.startsWith("--")) {
+        var end = src.indexOf("\n", i); if (end < 0) end = n;
+        out += '<span class="tc">' + esc(src.slice(i, end)) + "</span>"; i = end; continue;
+      }
+      if (c === '"' || c === "'") {
+        var j = i + 1;
+        while (j < n && src[j] !== c && src[j] !== "\n") { if (src[j] === "\\") j++; j++; }
+        out += '<span class="ts">' + esc(src.slice(i, j + 1)) + "</span>"; i = j + 1; continue;
+      }
+      if ((m = rest.match(/^\d+(\.\d+)?/)) && !/\w/.test(src[i - 1] || "")) {
+        out += '<span class="tn">' + m[0] + "</span>"; i += m[0].length; continue;
+      }
+      if ((m = rest.match(/^[A-Za-z_]\w*/))) {
+        var w = m[0], after = src.slice(i + w.length);
+        if (KEYWORDS.test(w)) out += '<span class="tk">' + w + "</span>";
+        else if (CONSTS.test(w)) out += '<span class="tb">' + w + "</span>";
+        else if (/^\s*[("]/.test(after)) out += '<span class="tf">' + w + "</span>";
+        else out += w;
+        i += w.length; continue;
+      }
+      out += esc(c); i++;
+    }
+    return out;
+  }
+  document.querySelectorAll(".code pre").forEach(function (pre) {
+    var raw = pre.textContent;
+    pre.innerHTML = highlight(raw);
+    var head = document.createElement("div");
+    head.className = "code-head";
+    head.innerHTML = '<span><span class="dot"></span>Lua</span><button class="copy" type="button">Copy</button>';
+    pre.parentNode.insertBefore(head, pre);
+    head.querySelector(".copy").addEventListener("click", function () {
+      var done = function () { toast("Copied", "The example is on your clipboard."); };
+      if (navigator.clipboard) navigator.clipboard.writeText(raw).then(done, fallback);
+      else fallback();
+      function fallback() {
+        var ta = document.createElement("textarea"); ta.value = raw; document.body.appendChild(ta);
+        ta.select(); try { document.execCommand("copy"); } catch (_) {} ta.remove(); done();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------- Notifications (Features/Notifications look)
+  var toasts = document.getElementById("toasts");
+  function toast(title, content, duration) {
+    duration = duration || 2.6;
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = '<span class="ico">' + icon("circle-check", "✓") + '</span><div><b class="ttl"></b><span class="msg"></span></div><div class="bar"></div>';
+    el.querySelector(".ttl").textContent = title;
+    el.querySelector(".msg").textContent = content;
+    el.querySelector(".bar").style.animationDuration = duration + "s";
+    toasts.appendChild(el);
+    setTimeout(function () { el.classList.add("out"); setTimeout(function () { el.remove(); }, 260); }, duration * 1000);
+    while (toasts.children.length > 4) toasts.firstChild.remove();
+  }
+
+  // ---------------------------------------------------------------- Theme menu + clickable swatches
+  var themeBtn = document.getElementById("themeBtn");
+  var menu = null;
+  function closeMenu() { if (menu) { menu.remove(); menu = null; } }
+  themeBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (menu) return closeMenu();
+    menu = document.createElement("div");
+    menu.className = "menu";
+    menu.innerHTML = '<div class="head">Theme</div>' + Object.keys(PRESETS).map(function (name) {
+      var t = Object.assign({}, AETHER, PRESETS[name]);
+      return '<button data-theme="' + name + '"><i style="background:linear-gradient(135deg,' + t.Accent + "," + t.AccentSecondary + ')"></i>' + name +
+        (name === currentTheme ? '<span class="check">✓</span>' : "") + "</button>";
+    }).join("");
+    var r = themeBtn.getBoundingClientRect();
+    menu.style.position = "fixed";
+    menu.style.top = r.bottom + 6 + "px";
+    menu.style.right = Math.max(8, innerWidth - r.right) + "px";
+    document.body.appendChild(menu);
+  });
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-theme]");
+    if (b) { applyTheme(b.dataset.theme, true); closeMenu(); return; }
+    if (menu && !menu.contains(e.target)) closeMenu();
+  });
+  document.querySelectorAll(".swatch").forEach(function (el) {
+    el.dataset.theme = el.textContent.trim();
+    el.title = "Try the " + el.dataset.theme + " theme";
+  });
+
+  // ---------------------------------------------------------------- Command palette (Ctrl+K)
+  var index = [];
+  pages.forEach(function (p) {
+    index.push({ title: p.name, sub: p.group, icon: p.icon, page: p.id, text: p.section.textContent.toLowerCase() });
+    p.section.querySelectorAll("h3, h4").forEach(function (h) {
+      index.push({ title: p.name + " › " + h.textContent, sub: p.group, icon: p.icon, page: p.id, anchor: h, text: h.textContent.toLowerCase() });
+    });
+    p.section.querySelectorAll(".row .t").forEach(function (t) {
+      index.push({ title: t.textContent.trim(), sub: p.name, icon: p.icon, page: p.id, anchor: t.closest(".row"), text: (t.textContent + " " + p.name).toLowerCase() });
+    });
+  });
+  function score(item, q) {
+    var title = item.title.toLowerCase();
+    if (title.indexOf(q) === 0) return 100;
+    if (title.indexOf(q) > -1) return 80;
+    // fuzzy: all letters in order
+    var j = 0;
+    for (var i = 0; i < title.length && j < q.length; i++) if (title[i] === q[j]) j++;
+    if (j === q.length) return 50;
+    if (item.text.indexOf(q) > -1) return 20;
+    return 0;
+  }
+  var overlay = document.getElementById("overlay");
+  var query = document.getElementById("query");
+  var results = document.getElementById("results");
+  var shown = [], sel = 0;
+  function render() {
+    var q = query.value.trim().toLowerCase();
+    shown = q
+      ? index.map(function (it) { return { it: it, s: score(it, q) }; }).filter(function (x) { return x.s > 0; })
+          .sort(function (a, b) { return b.s - a.s; }).slice(0, 40).map(function (x) { return x.it; })
+      : index.filter(function (it) { return !it.anchor; });
+    sel = 0;
+    if (!shown.length) { results.innerHTML = '<div class="empty">No results</div>'; return; }
+    results.innerHTML = shown.map(function (it, i) {
+      return '<div class="result' + (i === 0 ? " sel" : "") + '" data-i="' + i + '"><span class="ico">' + icon(it.icon, it.title) +
+        "</span><b>" + esc(it.title) + "</b><small>" + esc(it.sub) + "</small></div>";
+    }).join("");
+  }
+  function highlightSel() {
+    results.querySelectorAll(".result").forEach(function (r, i) { r.classList.toggle("sel", i === sel); });
+    var el = results.querySelector(".result.sel");
+    if (el) el.scrollIntoView({ block: "nearest" });
+  }
+  function choose(i) {
+    var it = shown[i];
+    if (!it) return;
+    closePalette();
+    go(it.page, it.anchor);
+    if (it.anchor && it.anchor.classList.contains("row")) {
+      var row = it.anchor;
+      setTimeout(function () { row.style.background = "var(--indicator)"; }, 250);
+      setTimeout(function () { row.style.background = ""; }, 1100);
+    }
+  }
+  function openPalette() { overlay.classList.add("open"); query.value = ""; render(); query.focus(); }
+  function closePalette() { overlay.classList.remove("open"); }
+  document.getElementById("searchBtn").addEventListener("click", openPalette);
+  overlay.addEventListener("click", function (e) { if (e.target === overlay) closePalette(); });
+  results.addEventListener("click", function (e) { var r = e.target.closest(".result"); if (r) choose(+r.dataset.i); });
+  query.addEventListener("input", render);
+  query.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown") { sel = Math.min(sel + 1, shown.length - 1); highlightSel(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { sel = Math.max(sel - 1, 0); highlightSel(); e.preventDefault(); }
+    else if (e.key === "Enter") { choose(sel); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); overlay.classList.contains("open") ? closePalette() : openPalette(); }
+    else if (e.key === "Escape") { closePalette(); closeMenu(); }
+  });
+
+  // ---------------------------------------------------------------- Start
+  var saved = null;
+  try { saved = localStorage.getItem("aether-docs-theme"); } catch (_) {}
+  applyTheme(saved || "Aether", false);
+  go(location.hash.slice(1) || pages[0].id, null, true);
+  // The browser jumps to the #hash on load; keep the page at its top like a freshly opened tab.
+  window.addEventListener("load", function () { pagesEl.scrollTop = 0; });
+})();
+</script>
+</body>
+</html>
