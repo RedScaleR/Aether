@@ -34,11 +34,13 @@ end
 __modules["Components/Element"] = function()
 -- Aether · Components/Element
 -- Base class for every element. Provides the row (title, description,
--- control slot), hover and press feedback, flags, visibility, disabled
--- state, and the chainable helpers every element shares:
+-- control slot, optional collapsible panel), hover/press feedback, flags,
+-- config ids, visibility, disabled state, tooltips, the right-click /
+-- long-press menu, drag-out-to-pin, and the chainable helpers:
 --
 --   Tab:Button("Rejoin"):Description("Reconnects to this server"):OnClick(fn)
 
+local Env = import("Core/Env")
 local Util = import("Core/Util")
 local Theme = import("Core/Theme")
 local Spring = import("Core/Spring")
@@ -46,8 +48,18 @@ local Signal = import("Core/Signal")
 local Maid = import("Core/Maid")
 local State = import("Core/State")
 
+local UserInputService = Env.service("UserInputService")
+
+local LONG_PRESS = 0.45
+local DRAG_THRESHOLD = 14
+
 local Element = {}
 Element.__index = Element
+
+-- Class capabilities (subclasses override).
+Element.Saveable = false -- has a value that configs store
+Element.Pinnable = false -- can become a floating widget
+Element.Bindable = false -- can get a key bind from the context menu
 
 -- Creates a subclass: local Toggle = Element.extend("Toggle")
 function Element.extend(className)
@@ -57,22 +69,27 @@ function Element.extend(className)
 	return class
 end
 
--- config:
---   Interactive   the whole row is a button (hover highlight, press ripple)
---   ControlWidth  width of the control slot on the right (0 = none)
---   ControlHeight height of the control slot
---   Stacked       control sits under the text, full width (sliders, inputs)
---   Height        minimum row height
---   TitleFont / TitleColor / DescriptionSize
+--[[ config:
+	Clickable      the header acts as a button (hover, ripple, self:_onClick())
+	Hover          highlight on hover (default: true when Clickable)
+	ControlWidth   width of the control slot on the right (inline layout)
+	ControlHeight  height of the control slot
+	Stacked        control sits under the text, full width (sliders)
+	Aside          width of a slot to the right of the title (stacked layout)
+	Panel          adds a collapsible panel under the header (dropdowns, pickers)
+	NoText         no title/description block
+	Height, PaddingY, TitleFont, TitleColor, DescriptionSize
+]]
 function Element.init(self, section, options, config)
 	config = config or {}
 	local class = getmetatable(self)
+	local window = section.Window
 
 	self.Type = class.ClassName
 	self.Name = options.Name or self.Type
 	self.Section = section
 	self.Tab = section.Tab
-	self.Window = section.Window
+	self.Window = window
 	self.Library = section.Library
 	self.Options = options
 	self.Maid = Maid.new()
@@ -82,46 +99,69 @@ function Element.init(self, section, options, config)
 	self.Destroyed = false
 
 	self._flag = options.Flag
+	self._autoId = table.concat({ section.Tab.Name, section.Name or "", self.Name }, "/")
 	self._tooltip = options.Tooltip
 	self._hovered = false
-	self._interactive = config.Interactive == true
+	self._save = options.Save ~= false
 
-	local minHeight = config.Height or 40
+	local touch = window.IsTouch
+	local minHeight = config.Height or (touch and 46 or 40)
 	local paddingY = config.PaddingY or 9
+	local stacked = config.Stacked == true
 
 	local row = Util.create("Frame", {
 		Name = self.Name,
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Theme = { BackgroundColor3 = "ElementHover" },
+	}, {
+		Util.corner(8),
+		Util.list(0),
+	})
+	self.Frame = row
+
+	local main = Util.create("Frame", {
+		Name = "Main",
 		Size = UDim2.new(1, 0, 0, minHeight),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
-		Theme = { BackgroundColor3 = "ElementHover" },
-	}, { Util.corner(8) })
-	self.Frame = row
+		LayoutOrder = 1,
+		Parent = row,
+	})
+	self.Main = main
 
-	if self._interactive then
+	if config.Clickable then
 		self.Hitbox = Util.create("TextButton", {
 			Name = "Hitbox",
 			Size = UDim2.fromScale(1, 1),
 			ZIndex = 1,
-			Parent = row,
+			Parent = main,
 		})
-		self.Maid:Give(self.Hitbox.MouseEnter:Connect(function()
-			self:_setHovered(true)
+		self.Maid:Give(self.Hitbox.Activated:Connect(function()
+			if self._suppressClick then
+				self._suppressClick = false
+				return
+			end
+			if not self.Disabled and self._onClick then
+				self:_onClick()
+			end
 		end))
-		self.Maid:Give(self.Hitbox.MouseLeave:Connect(function()
-			self:_setHovered(false)
+		self.Maid:Give(self.Hitbox.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 and not self.Disabled then
+				self:_ripple(input)
+			end
 		end))
 	end
 
-	local stacked = config.Stacked == true
-	local content = Util.create("Frame", {
-		Name = "Content",
+	local inner = Util.create("Frame", {
+		Name = "Inner",
 		Size = UDim2.new(1, 0, 0, minHeight),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		ZIndex = 2,
-		Parent = row,
+		Parent = main,
 	}, {
 		Util.padding(paddingY, 12, paddingY, 12),
 		Util.list(
@@ -130,65 +170,125 @@ function Element.init(self, section, options, config)
 			Enum.VerticalAlignment.Center
 		),
 	})
-	self.Content = content
+	self.Inner = inner
 
-	local controlWidth = config.ControlWidth or 0
-	local textSize
-	if stacked or controlWidth <= 0 then
-		textSize = UDim2.fromScale(1, 0)
-	else
-		textSize = UDim2.new(1, -(controlWidth + 10), 0, 0)
+	-- Text block (title + description). In the stacked layout it shares a
+	-- header row with the optional aside slot.
+	local textParent = inner
+	if stacked and not config.NoText then
+		textParent = Util.create("Frame", {
+			Name = "Header",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 1,
+			Parent = inner,
+		}, { Util.list(10, Enum.FillDirection.Horizontal, Enum.VerticalAlignment.Center) })
 	end
 
-	local text = Util.create("Frame", {
-		Name = "Text",
-		Size = textSize,
-		AutomaticSize = Enum.AutomaticSize.Y,
-		BackgroundTransparency = 1,
-		LayoutOrder = 1,
-		Parent = content,
-	}, { Util.list(2) })
+	self._controlWidth = config.ControlWidth or 0
+	self._asideWidth = config.Aside or 0
+	self._stacked = stacked
 
-	self.TitleLabel = Util.create("TextLabel", {
-		Name = "Title",
-		Size = UDim2.fromScale(1, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Text = self.Name,
-		FontFace = config.TitleFont or Util.Fonts.Medium,
-		TextSize = 14,
-		TextWrapped = true,
-		LayoutOrder = 1,
-		Theme = { TextColor3 = config.TitleColor or "Text" },
-		Parent = text,
-	})
+	if not config.NoText then
+		local text = Util.create("Frame", {
+			Name = "Text",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 1,
+			Parent = textParent,
+		}, { Util.list(2) })
+		self.TextBlock = text
 
-	local description = options.Description
-	self.DescriptionLabel = Util.create("TextLabel", {
-		Name = "Description",
-		Size = UDim2.fromScale(1, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Text = description and tostring(description) or "",
-		TextSize = config.DescriptionSize or 12,
-		TextWrapped = true,
-		Visible = description ~= nil and description ~= "",
-		LayoutOrder = 2,
-		Theme = { TextColor3 = "TextDim" },
-		Parent = text,
-	})
+		self.TitleLabel = Util.create("TextLabel", {
+			Name = "Title",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = self.Name,
+			FontFace = config.TitleFont or Util.Fonts.Medium,
+			TextSize = 14,
+			TextWrapped = true,
+			LayoutOrder = 1,
+			Theme = { TextColor3 = config.TitleColor or "Text" },
+			Parent = text,
+		})
 
-	if stacked or controlWidth > 0 then
+		local description = options.Description
+		self.DescriptionLabel = Util.create("TextLabel", {
+			Name = "Description",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = description and tostring(description) or "",
+			TextSize = config.DescriptionSize or 12,
+			TextWrapped = true,
+			Visible = description ~= nil and description ~= "",
+			LayoutOrder = 2,
+			Theme = { TextColor3 = "TextDim" },
+			Parent = text,
+		})
+
+		if stacked and self._asideWidth > 0 then
+			self.Aside = Util.create("Frame", {
+				Name = "Aside",
+				Size = UDim2.fromOffset(self._asideWidth, 24),
+				BackgroundTransparency = 1,
+				LayoutOrder = 2,
+				Parent = textParent,
+			})
+		end
+	end
+
+	if stacked or self._controlWidth > 0 then
 		self.Control = Util.create("Frame", {
 			Name = "Control",
 			Size = stacked and UDim2.new(1, 0, 0, config.ControlHeight or 24)
-				or UDim2.fromOffset(controlWidth, config.ControlHeight or 24),
+				or UDim2.fromOffset(self._controlWidth, config.ControlHeight or 24),
 			BackgroundTransparency = 1,
 			LayoutOrder = 2,
-			Parent = content,
+			Parent = inner,
 		})
 	end
+	self:_layoutText()
+
+	if config.Panel then
+		self.Panel = Util.create("Frame", {
+			Name = "Panel",
+			Size = UDim2.new(1, 0, 0, 0),
+			BackgroundTransparency = 1,
+			ClipsDescendants = true,
+			LayoutOrder = 2,
+			Parent = row,
+		})
+		self.PanelInner = Util.create("Frame", {
+			Name = "Inner",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			Parent = self.Panel,
+		}, {
+			Util.padding(0, 12, 10, 12),
+			Util.list(6),
+		})
+		self.Expanded = false
+	end
+
+	-- Hover, tooltip, context menu, long press and drag-to-pin.
+	local hover = config.Hover
+	if hover == nil then
+		hover = config.Clickable == true
+	end
+	self._hover = hover
+	self.Maid:Give(row.MouseEnter:Connect(function()
+		self:_setHovered(true)
+	end))
+	self.Maid:Give(row.MouseLeave:Connect(function()
+		self:_setHovered(false)
+	end))
+	self:_bindGestures(self.Hitbox or self.TextBlock or main)
 
 	section:_add(self)
-	self.Window:_registerElement(self)
+	window:_registerElement(self)
 
 	if type(options.Callback) == "function" then
 		self.Changed:Connect(options.Callback)
@@ -204,7 +304,35 @@ function Element._ready(self)
 	if options.Visible == false then
 		self:SetVisible(false)
 	end
+	self.Window:_elementReady(self)
 	return self
+end
+
+-- Keeps the text block from overlapping the control/aside slots.
+function Element:_layoutText()
+	local text = self.TextBlock
+	if not text then
+		if self.Control and not self._stacked then
+			self.Control.Size = UDim2.new(1, 0, 0, self.Control.Size.Y.Offset)
+		end
+		return
+	end
+	local reserved = 0
+	if self._stacked then
+		reserved = self._asideWidth > 0 and self._asideWidth + 10 or 0
+	elseif self._controlWidth > 0 then
+		reserved = self._controlWidth + 10
+	end
+	text.Size = UDim2.new(1, -reserved, 0, 0)
+end
+
+-- Resizes the inline control slot (e.g. when a key chip appears).
+function Element:_setControlWidth(width)
+	self._controlWidth = width
+	if self.Control and not self._stacked then
+		self.Control.Size = UDim2.fromOffset(width, self.Control.Size.Y.Offset)
+	end
+	self:_layoutText()
 end
 
 ---------------------------------------------------------------------------
@@ -213,17 +341,29 @@ end
 
 function Element:_setHovered(hovered)
 	self._hovered = hovered
-	local show = hovered and not self.Disabled
+	local show = hovered and self._hover and not self.Disabled
 	Theme.animate(self.Frame, { BackgroundTransparency = show and "HoverTransparency" or 1 })
 	if self._onHover then
-		self:_onHover(show)
+		self:_onHover(hovered and not self.Disabled)
+	end
+	if hovered then
+		self.Window:_scheduleTooltip(self)
+	else
+		self.Window:_hideTooltip(self)
 	end
 end
 
--- Expanding circle from the press point, clipped by the row.
+function Element:_tooltipText()
+	if self.Disabled and self._disabledReason then
+		return self._disabledReason
+	end
+	return self._tooltip
+end
+
+-- Expanding circle from the press point, clipped by the header.
 function Element:_ripple(input)
-	local row = self.Frame
-	local position, size = row.AbsolutePosition, row.AbsoluteSize
+	local main = self.Main
+	local position, size = main.AbsolutePosition, main.AbsoluteSize
 	if size.X <= 0 or size.Y <= 0 then
 		return
 	end
@@ -239,10 +379,10 @@ function Element:_ripple(input)
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(relative.X, relative.Y),
 		Size = UDim2.fromScale(0, 0),
-		BackgroundTransparency = 0.8,
+		BackgroundTransparency = 0.82,
 		ZIndex = 1,
 		Theme = { BackgroundColor3 = "Accent" },
-		Parent = row,
+		Parent = main,
 	}, {
 		Util.corner("full"),
 		Util.create("UIAspectRatioConstraint", {
@@ -259,12 +399,163 @@ function Element:_ripple(input)
 	end)
 end
 
+-- Briefly highlights the row (used by the command palette's "reveal").
+function Element:Flash()
+	local row = self.Frame
+	Theme.animate(row, { BackgroundColor3 = "Accent", BackgroundTransparency = 0.8 }, "Quick")
+	task.delay(0.35, function()
+		if not self.Destroyed then
+			Theme.animate(row, { BackgroundColor3 = "ElementHover", BackgroundTransparency = 1 }, "Smooth")
+		end
+	end)
+	return self
+end
+
+---------------------------------------------------------------------------
+-- Gestures: right-click / long-press menu and drag-out-to-pin
+---------------------------------------------------------------------------
+
+function Element:_bindGestures(target)
+	local pressInput, pressStart, longPressThread, dragging = nil, nil, nil, false
+
+	local function cancelLongPress()
+		if longPressThread then
+			pcall(task.cancel, longPressThread)
+			longPressThread = nil
+		end
+	end
+
+	self.Maid:Give(target.InputBegan:Connect(function(input)
+		if self.Destroyed then
+			return
+		end
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseButton2 then
+			self.Window:_openContextMenu(self, Util.pointer(input))
+		elseif kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
+			pressInput = input
+			pressStart = Util.pointer(input)
+			dragging = false
+			if kind == Enum.UserInputType.Touch then
+				cancelLongPress()
+				longPressThread = task.delay(LONG_PRESS, function()
+					longPressThread = nil
+					if pressInput == input and not dragging and not self.Destroyed then
+						self._suppressClick = true
+						self.Window:_openContextMenu(self, pressStart)
+					end
+				end)
+			end
+		end
+	end))
+
+	self.Maid:Give(UserInputService.InputChanged:Connect(function(input)
+		if not pressInput then
+			return
+		end
+		local isTouch = pressInput.UserInputType == Enum.UserInputType.Touch
+		if isTouch and input ~= pressInput then
+			return
+		elseif not isTouch and input.UserInputType ~= Enum.UserInputType.MouseMovement then
+			return
+		end
+		local pointer = Util.pointer(input)
+		if not dragging and (pointer - pressStart).Magnitude > DRAG_THRESHOLD then
+			cancelLongPress()
+			-- Only mouse drags pin; on touch a moving finger means scrolling.
+			if not isTouch and self.Pinnable and not self.Disabled then
+				dragging = true
+				self._suppressClick = true
+				self.Window:_beginPinDrag(self, pointer)
+			else
+				pressInput = nil
+			end
+		elseif dragging then
+			self.Window:_updatePinDrag(self, pointer)
+		end
+	end))
+
+	self.Maid:Give(UserInputService.InputEnded:Connect(function(input)
+		if not pressInput then
+			return
+		end
+		local matches = input == pressInput
+			or (input.UserInputType == Enum.UserInputType.MouseButton1 and pressInput.UserInputType == Enum.UserInputType.MouseButton1)
+		if not matches then
+			return
+		end
+		cancelLongPress()
+		pressInput = nil
+		if dragging then
+			dragging = false
+			self.Window:_endPinDrag(self, Util.pointer(input))
+			-- Activated may not fire after a drag; don't swallow the next real click.
+			task.defer(function()
+				self._suppressClick = false
+			end)
+		end
+	end))
+end
+
+---------------------------------------------------------------------------
+-- Values, flags and configs
+---------------------------------------------------------------------------
+
 -- Stores the value under this element's flag (Aether.Flags[flag]).
 function Element:_publish(value)
 	self.Value = value
+	self.CurrentValue = value -- Rayfield's name for it
 	if self._flag then
 		State.Flags[self._flag] = value
 		State.Options[self._flag] = self
+	end
+end
+
+-- Stable id used by configs and pinned widgets: the flag, or "Tab/Section/Name".
+function Element:GetId()
+	return self._flag or self._autoId
+end
+
+-- JSON-safe form of the value (overridden by elements with rich values).
+function Element:_serialize()
+	return self.Value
+end
+
+function Element:_deserialize(data)
+	if self.Set then
+		self:Set(data, false, true)
+	end
+end
+
+-- Human-readable value (command palette, "Copy value").
+function Element:_display()
+	local value = self.Value
+	if value == nil then
+		return ""
+	end
+	return tostring(value)
+end
+
+function Element:Reset()
+	if self._default ~= nil and self.Set then
+		self:Set(self._default)
+	end
+	return self
+end
+
+---------------------------------------------------------------------------
+-- Collapsible panel (dropdowns, color pickers)
+---------------------------------------------------------------------------
+
+function Element:_setExpanded(expanded, height)
+	if not self.Panel then
+		return
+	end
+	self.Expanded = expanded == true
+	local goal = UDim2.new(1, 0, 0, self.Expanded and height or 0)
+	Spring.animate(self.Panel, self.Expanded and "Gentle" or "Snappy", { Size = goal })
+	if self._onExpanded then
+		self:_onExpanded(self.Expanded)
 	end
 end
 
@@ -291,19 +582,38 @@ function Element:Flag(name)
 	if name and self.Value ~= nil then
 		self:_publish(self.Value)
 	end
+	-- The id changed: saved values and pins for the new id apply now.
+	self.Window:_elementReady(self)
 	return self
 end
 
 function Element:SetTitle(text)
 	self.Name = tostring(text)
-	self.TitleLabel.Text = self.Name
+	if self.TitleLabel then
+		self.TitleLabel.Text = self.Name
+	end
+	self.Window:_elementText(self)
 	return self
 end
 
 function Element:SetDescription(text)
 	local label = self.DescriptionLabel
-	label.Text = text and tostring(text) or ""
-	label.Visible = text ~= nil and text ~= ""
+	if label then
+		label.Text = text and tostring(text) or ""
+		label.Visible = text ~= nil and text ~= ""
+	end
+	self.Window:_elementText(self)
+	return self
+end
+
+-- Pins this element as a floating widget (position in screen pixels, optional).
+function Element:Pin(position)
+	self.Window:Pin(self, position)
+	return self
+end
+
+function Element:Unpin()
+	self.Window:Unpin(self)
 	return self
 end
 
@@ -318,14 +628,36 @@ end
 function Element:SetDisabled(disabled, reason)
 	self.Disabled = disabled == true
 	self._disabledReason = reason
-	local transparency = self.Disabled and 0.55 or 0
-	Spring.animate(self.TitleLabel, "Snappy", { TextTransparency = transparency })
-	Spring.animate(self.DescriptionLabel, "Snappy", { TextTransparency = transparency })
-	if self.Hitbox then
-		self.Hitbox.Active = not self.Disabled
+	local transparency = self.Disabled and 0.5 or 0
+	if self.TitleLabel then
+		Spring.animate(self.TitleLabel, "Snappy", { TextTransparency = transparency })
+		Spring.animate(self.DescriptionLabel, "Snappy", { TextTransparency = transparency })
 	end
-	if self.Disabled and self._hovered then
-		self:_setHovered(false)
+
+	-- A transparent button over the header swallows clicks while disabled.
+	if self.Disabled and not self._blocker then
+		self._blocker = Util.create("TextButton", {
+			Name = "Blocker",
+			Size = UDim2.fromScale(1, 1),
+			ZIndex = 10,
+			Parent = self.Main,
+		})
+	end
+	if self._blocker then
+		self._blocker.Visible = self.Disabled
+	end
+	if self.Control then
+		for _, part in ipairs(self.Control:GetDescendants()) do
+			if part:IsA("GuiButton") or part:IsA("TextBox") then
+				part.Active = not self.Disabled
+			end
+		end
+	end
+	if self.Disabled and self.Expanded then
+		self:_setExpanded(false, 0)
+	end
+	if self._hovered then
+		self:_setHovered(true)
 	end
 	if self._onDisabled then
 		self:_onDisabled(self.Disabled)
@@ -342,10 +674,10 @@ function Element:Destroy()
 		State.Flags[self._flag] = nil
 		State.Options[self._flag] = nil
 	end
+	self.Window:_unregisterElement(self)
 	self.Maid:Clean()
 	self.Changed:DisconnectAll()
 	self.Section:_remove(self)
-	self.Window:_unregisterElement(self)
 	self.Frame:Destroy()
 end
 
@@ -373,12 +705,15 @@ local order = {}
 local hosts = {}
 
 local function install(host, name, class)
-	local method = function(self, first, second)
-		local section = host.resolve(self)
-		return class.new(section, Util.options(first, second))
+	host.class[name] = function(self, first, second)
+		return class.new(host.resolve(self), Util.options(first, second))
 	end
-	host.class[name] = method
-	host.class["Create" .. name] = method
+	-- Create* keeps Rayfield's callback shapes for scripts that are switching over.
+	host.class["Create" .. name] = function(self, first, second)
+		local options = Util.options(first, second)
+		options.__compat = "Rayfield"
+		return class.new(host.resolve(self), options)
+	end
 end
 
 function Elements.register(name, class)
@@ -411,6 +746,281 @@ function Elements.names()
 end
 
 return Elements
+end
+
+-- ======================================================================
+-- Components/KeyChip
+__modules["Components/KeyChip"] = function()
+-- Aether · Components/KeyChip
+-- The small key badge used by toggles, buttons and the Keybind element.
+-- Click it to rebind: the next key press becomes the bind, Escape cancels,
+-- Backspace clears. Also watches the bound key and reports presses.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+
+local UserInputService = Env.service("UserInputService")
+local TextService = Env.service("TextService")
+
+local KeyChip = {}
+KeyChip.__index = KeyChip
+
+-- The chip currently waiting for a key, if any (binds are paused meanwhile).
+KeyChip.Listening = nil
+
+local ALIASES = {
+	ctrl = "LeftControl",
+	control = "LeftControl",
+	rightctrl = "RightControl",
+	leftctrl = "LeftControl",
+	shift = "LeftShift",
+	alt = "LeftAlt",
+	enter = "Return",
+	esc = "Escape",
+	del = "Delete",
+	space = "Space",
+	mb1 = "MouseButton1",
+	mb2 = "MouseButton2",
+	mb3 = "MouseButton3",
+}
+
+local MOUSE_BUTTONS = {
+	MouseButton1 = true,
+	MouseButton2 = true,
+	MouseButton3 = true,
+}
+
+-- Accepts Enum.KeyCode / Enum.UserInputType items or names ("F", "RightCtrl", "MouseButton2").
+function KeyChip.parse(key)
+	if key == nil or key == false or key == "" or key == "None" then
+		return nil
+	end
+	if typeof(key) == "EnumItem" then
+		return key
+	end
+	if type(key) ~= "string" then
+		return nil
+	end
+	local name = ALIASES[string.lower(key)] or key
+	if #name == 1 then
+		name = string.upper(name)
+	end
+	if MOUSE_BUTTONS[name] then
+		return Enum.UserInputType[name]
+	end
+	local ok, item = pcall(function()
+		return Enum.KeyCode[name]
+	end)
+	if ok and item then
+		return item
+	end
+	return nil
+end
+
+-- True when the input matches a key (KeyCode or mouse button).
+function KeyChip.matches(key, input)
+	if key == nil then
+		return false
+	end
+	if key.EnumType == Enum.KeyCode then
+		return input.KeyCode == key
+	end
+	return input.UserInputType == key
+end
+
+local measureFont = Enum.Font.GothamMedium
+pcall(function()
+	measureFont = Enum.Font.BuilderSansMedium
+end)
+
+local function textWidth(text)
+	local ok, size = pcall(function()
+		return TextService:GetTextSize(text, 12, measureFont, Vector2.new(1000, 100))
+	end)
+	if ok and size then
+		return size.X
+	end
+	return #text * 7
+end
+
+--[[ options:
+	Parent, LayoutOrder, Maid
+	Key             initial key
+	ShowWhenEmpty   show "None" instead of hiding when unbound
+	AllowNone       Backspace/Delete clears the bind (default true)
+	AllowMouse      mouse buttons 2/3 can be bound (default true)
+	OnChanged(key)  the bind changed
+	OnResize(width) the chip's width changed (0 when hidden)
+	OnTriggered(began, input) the bound key was pressed (true) or released (false)
+]]
+function KeyChip.new(options)
+	local self = setmetatable({}, KeyChip)
+	self.Key = nil
+	self.Listening = false
+	self._options = options
+	self._showWhenEmpty = options.ShowWhenEmpty == true
+	self._allowNone = options.AllowNone ~= false
+	self._allowMouse = options.AllowMouse ~= false
+
+	local button = Util.create("TextButton", {
+		Name = "KeyChip",
+		Size = UDim2.fromOffset(40, 24),
+		Text = "",
+		FontFace = Util.Fonts.Medium,
+		TextSize = 12,
+		LayoutOrder = options.LayoutOrder or 1,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "TextDim",
+		},
+		Parent = options.Parent,
+	}, {
+		Util.corner(6),
+		Util.stroke(),
+	})
+	self.Button = button
+	self._stroke = button:FindFirstChildOfClass("UIStroke")
+
+	local maid = options.Maid
+	maid:Give(button.Activated:Connect(function()
+		if self.Listening then
+			self:StopListening()
+		else
+			self:Listen()
+		end
+	end))
+
+	maid:Give(UserInputService.InputBegan:Connect(function(input, processed)
+		if self.Listening then
+			self:_capture(input)
+			return
+		end
+		if processed or KeyChip.Listening or not self.Key or not button.Parent then
+			return
+		end
+		if KeyChip.matches(self.Key, input) and options.OnTriggered then
+			options.OnTriggered(true, input)
+		end
+	end))
+
+	maid:Give(UserInputService.InputEnded:Connect(function(input)
+		if self.Listening or not self.Key or not options.OnTriggered then
+			return
+		end
+		if KeyChip.matches(self.Key, input) then
+			options.OnTriggered(false, input)
+		end
+	end))
+
+	maid:Give(function()
+		if KeyChip.Listening == self then
+			KeyChip.Listening = nil
+		end
+	end)
+
+	self:SetKey(options.Key, true)
+	return self
+end
+
+function KeyChip:_render()
+	local button = self.Button
+	local text
+	if self.Listening then
+		text = "..."
+	elseif self.Key then
+		text = Util.keyName(self.Key)
+	else
+		text = "None"
+	end
+	button.Text = text
+
+	local visible = self.Listening or self.Key ~= nil or self._showWhenEmpty
+	button.Visible = visible
+	local width = visible and math.max(28, math.ceil(textWidth(text)) + 18) or 0
+	if visible then
+		Spring.animate(button, "Snappy", { Size = UDim2.fromOffset(width, 24) })
+	end
+	if self._options.OnResize then
+		self._options.OnResize(width)
+	end
+end
+
+function KeyChip:SetKey(key, silent)
+	self.Key = KeyChip.parse(key)
+	self:_render()
+	if not silent and self._options.OnChanged then
+		self._options.OnChanged(self.Key)
+	end
+	return self
+end
+
+function KeyChip:Listen()
+	if KeyChip.Listening and KeyChip.Listening ~= self then
+		KeyChip.Listening:StopListening()
+	end
+	KeyChip.Listening = self
+	self.Listening = true
+	self._listenStarted = os.clock()
+	Theme.animate(self.Button, { TextColor3 = "Accent" })
+	if self._stroke then
+		Theme.animate(self._stroke, { Color = "Accent", Transparency = 0.2 })
+	end
+	self:_render()
+
+	-- Give up after a few seconds so the chip never gets stuck.
+	local started = self._listenStarted
+	task.delay(6, function()
+		if self.Listening and self._listenStarted == started then
+			self:StopListening()
+		end
+	end)
+	return self
+end
+
+function KeyChip:StopListening()
+	if KeyChip.Listening == self then
+		KeyChip.Listening = nil
+	end
+	self.Listening = false
+	Theme.animate(self.Button, { TextColor3 = "TextDim" })
+	if self._stroke then
+		Theme.animate(self._stroke, { Color = "Stroke", Transparency = "StrokeTransparency" })
+	end
+	self:_render()
+	return self
+end
+
+function KeyChip:_capture(input)
+	-- Ignore the click that started listening.
+	if os.clock() - (self._listenStarted or 0) < 0.05 then
+		return
+	end
+	local kind = input.UserInputType
+	if kind == Enum.UserInputType.Keyboard then
+		local code = input.KeyCode
+		if code == Enum.KeyCode.Escape then
+			self:StopListening()
+		elseif code == Enum.KeyCode.Backspace or code == Enum.KeyCode.Delete then
+			self:StopListening()
+			if self._allowNone then
+				self:SetKey(nil)
+			end
+		elseif code ~= Enum.KeyCode.Unknown then
+			self:StopListening()
+			self:SetKey(code)
+		end
+	elseif (kind == Enum.UserInputType.MouseButton2 or kind == Enum.UserInputType.MouseButton3) and self._allowMouse then
+		self:StopListening()
+		self:SetKey(kind)
+	elseif kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.Touch then
+		self:StopListening()
+	end
+end
+
+return KeyChip
 end
 
 -- ======================================================================
@@ -497,6 +1107,8 @@ function Section:SetName(name)
 	return self
 end
 
+Section.Set = Section.SetName
+
 function Section:SetVisible(visible)
 	self.Visible = visible ~= false
 	self.Frame.Visible = self.Visible
@@ -528,13 +1140,14 @@ end
 -- ======================================================================
 -- Components/Tab
 __modules["Components/Tab"] = function()
--- Aether · Components/Tab
+-- Aether Â· Components/Tab
 -- A sidebar entry and its scrolling page. Elements created directly on a tab
 -- go into its most recent section (an untitled one is made if needed).
 
 local Util = import("Core/Util")
 local Theme = import("Core/Theme")
 local Icons = import("Core/Icons")
+local Tooltip = import("Features/Tooltip")
 local Elements = import("Components/Elements")
 local Section = import("Components/Section")
 
@@ -549,6 +1162,7 @@ function Tab.new(window, options)
 	self.Library = window.Library
 	self.Index = #window.Tabs + 1
 	self.Name = options.Name or ("Tab " .. self.Index)
+	self.IconName = options.Icon
 	self.Sections = {}
 	self.Active = false
 	self.Visible = true
@@ -563,9 +1177,9 @@ function Tab.new(window, options)
 		Theme = { BackgroundColor3 = "ElementHover" },
 		Parent = window._tabList,
 	}, { Util.corner(8) })
-	self.Button = button
+	self._button = button
 
-	self.Icon = Util.create("ImageLabel", {
+	self._icon = Util.create("ImageLabel", {
 		Name = "Icon",
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 11, 0.5, 0),
@@ -575,8 +1189,8 @@ function Tab.new(window, options)
 	})
 
 	-- No icon (or an unknown one): show the tab's initial in a rounded badge instead.
-	if not Icons.apply(self.Icon, options.Icon) then
-		self.Badge = Util.create("TextLabel", {
+	if not Icons.apply(self._icon, options.Icon) then
+		self._badge = Util.create("TextLabel", {
 			Name = "Badge",
 			AnchorPoint = Vector2.new(0, 0.5),
 			Position = UDim2.new(0, 11, 0.5, 0),
@@ -597,7 +1211,7 @@ function Tab.new(window, options)
 		})
 	end
 
-	self.Label = Util.create("TextLabel", {
+	self._label = Util.create("TextLabel", {
 		Name = "Label",
 		Position = UDim2.fromOffset(40, 0),
 		Size = UDim2.new(1, -48, 1, 0),
@@ -612,10 +1226,17 @@ function Tab.new(window, options)
 	window.Maid:Give(button.MouseEnter:Connect(function()
 		self._hovered = true
 		self:_refresh()
+		-- In the icon-only sidebar the name moves into a tooltip.
+		if self._compact then
+			Tooltip.schedule(self, function()
+				return self.Name
+			end)
+		end
 	end))
 	window.Maid:Give(button.MouseLeave:Connect(function()
 		self._hovered = false
 		self:_refresh()
+		Tooltip.hide(self)
 	end))
 	window.Maid:Give(button.Activated:Connect(function()
 		window:SelectTab(self)
@@ -641,6 +1262,7 @@ function Tab.new(window, options)
 		Parent = self.Page,
 	})
 
+	self:_setCompact(window._compact == true)
 	return self
 end
 
@@ -652,21 +1274,26 @@ end
 function Tab:_refresh()
 	local lit = self.Active or self._hovered
 	local textToken = lit and "Text" or "TextDim"
-	Theme.animate(self.Label, { TextColor3 = textToken })
-	if self.Badge then
+	Theme.animate(self._label, { TextColor3 = textToken })
+	if self._badge then
 		local badgeToken = self.Active and "Accent" or textToken
-		Theme.animate(self.Badge, { TextColor3 = badgeToken })
-		Theme.animate(self.Badge.UIStroke, { Color = badgeToken })
+		Theme.animate(self._badge, { TextColor3 = badgeToken })
+		Theme.animate(self._badge.UIStroke, { Color = badgeToken })
 	else
-		Theme.animate(self.Icon, { ImageColor3 = self.Active and "Accent" or textToken })
+		Theme.animate(self._icon, { ImageColor3 = self.Active and "Accent" or textToken })
 	end
 	local hoverOnly = self._hovered and not self.Active
-	Theme.animate(self.Button, { BackgroundTransparency = hoverOnly and "HoverTransparency" or 1 })
+	Theme.animate(self._button, { BackgroundTransparency = hoverOnly and "HoverTransparency" or 1 })
 end
 
 function Tab:_setActive(active)
 	self.Active = active
 	self:_refresh()
+end
+
+function Tab:_setCompact(compact)
+	self._compact = compact
+	self._label.Visible = not compact
 end
 
 -- Creates a section. Elements created on the tab afterwards go into it.
@@ -693,7 +1320,7 @@ end
 
 function Tab:SetVisible(visible)
 	self.Visible = visible ~= false
-	self.Button.Visible = self.Visible
+	self._button.Visible = self.Visible
 	self.Window:_onTabsChanged()
 	return self
 end
@@ -703,7 +1330,7 @@ function Tab:Destroy()
 		section:Destroy()
 	end
 	self.Window:_removeTab(self)
-	self.Button:Destroy()
+	self._button:Destroy()
 	self.Page:Destroy()
 end
 
@@ -719,8 +1346,9 @@ end
 __modules["Components/Window"] = function()
 -- Aether · Components/Window
 -- The main window: frosted-glass shell, topbar, sidebar with tabs, pages,
--- dragging, resizing, fit-to-screen scaling, the toggle key, and the
--- floating open button on touch devices.
+-- dragging, resizing, fit-to-screen scaling, the toggle key, the floating
+-- open button on touch devices, and the glue to the feature modules
+-- (command palette, pins, configs, menus, tooltips, dialogs).
 
 local Env = import("Core/Env")
 local Util = import("Core/Util")
@@ -730,6 +1358,15 @@ local Signal = import("Core/Signal")
 local Maid = import("Core/Maid")
 local Icons = import("Core/Icons")
 local Tab = import("Components/Tab")
+local KeyChip = import("Components/KeyChip")
+local Config = import("Features/Config")
+local Pins = import("Features/Pins")
+local Palette = import("Features/Palette")
+local Dialog = import("Features/Dialog")
+local Tooltip = import("Features/Tooltip")
+local ContextMenu = import("Features/ContextMenu")
+local Notifications = import("Features/Notifications")
+local Settings = import("Features/Settings")
 
 local UserInputService = Env.service("UserInputService")
 local Players = Env.service("Players")
@@ -744,7 +1381,10 @@ local TAB_GAP = 2
 local CORNER = 12
 local FADE_MARGIN = 48
 
-local MIN_SIZE = Vector2.new(480, 320)
+local COMPACT_SIDEBAR = 56
+local COMPACT_BREAKPOINT = 560
+
+local MIN_SIZE = Vector2.new(400, 300)
 local DEFAULT_SIZE = Vector2.new(680, 460)
 local TOUCH_SIZE = Vector2.new(580, 340)
 
@@ -783,18 +1423,54 @@ function Window.new(library, options)
 	local size = toVector2(options.Size) or (touch and TOUCH_SIZE or DEFAULT_SIZE)
 	self._size = Vector2.new(math.max(size.X, MIN_SIZE.X), math.max(size.Y, MIN_SIZE.Y))
 	self._sidebarWidth = options.SidebarWidth or (touch and COMPACT_SIDEBAR_WIDTH or SIDEBAR_WIDTH)
-	self._toggleKey = options.ToggleKey or Enum.KeyCode.RightControl
+	self._toggleKey = KeyChip.parse(options.ToggleKey) or Enum.KeyCode.RightControl
+	if options.PaletteKey == false then
+		self._paletteKey = nil
+	else
+		self._paletteKey = KeyChip.parse(options.PaletteKey) or Enum.KeyCode.K
+	end
 	self._position = nil
+	self._prefs = {}
 
 	if options.Theme then
-		Theme.set(options.Theme, false)
+		if type(options.Theme) == "table" then
+			Theme.set(options.Theme, false)
+		else
+			Theme.set(tostring(options.Theme), false)
+		end
 	end
+
+	self.Config = Config.new(self)
+	self.Pins = Pins.new(self)
+	self.Palette = Palette.new(self)
 
 	self:_build()
 	self:_bindInput()
 	self.MountedIn = Env.mount(self.Gui)
 	self:_updateFit()
 	self:_placeDefault()
+
+	-- Saved interface preferences (theme, toggle key, pinned widgets) and the
+	-- autoload config. Values for elements created later wait for them.
+	self:_loadPrefs()
+	if options.AutoLoad ~= false then
+		self.Config:LoadAutoload()
+	end
+
+	-- AutoSave = true / "name": every change is saved shortly after it happens
+	-- and restored on the next run (Rayfield scripts restore it with
+	-- Aether:LoadConfiguration() instead).
+	if options.AutoSave == true then
+		self._autoSave = "autosave"
+	elseif type(options.AutoSave) == "string" and options.AutoSave ~= "" then
+		self._autoSave = Config.sanitize(options.AutoSave)
+	end
+	if self._autoSave and not options.__deferAutoSave then
+		self:_loadAutoSave()
+	end
+	self.Maid:Give(self.Pins.Changed:Connect(function()
+		self:_savePrefs()
+	end))
 
 	if options.Visible ~= false then
 		-- Deferred so tabs created right after :Window() are in place before the intro plays.
@@ -950,9 +1626,11 @@ function Window:_build()
 		Position = UDim2.fromOffset(0, TOPBAR_HEIGHT),
 		Size = UDim2.new(0, sidebarWidth, 1, -TOPBAR_HEIGHT),
 		BackgroundTransparency = 1,
+		ClipsDescendants = true,
 		ZIndex = 2,
 		Parent = root,
 	})
+	self._sidebar = sidebar
 	Util.create("Frame", {
 		Name = "Divider",
 		AnchorPoint = Vector2.new(1, 0),
@@ -1033,6 +1711,7 @@ function Window:_build()
 		Parent = pages,
 	})
 	self._pageFade = pageFadeOk and pageFade or nil
+	self:_applySidebar(true)
 
 	-- Resize grip (bottom-right corner)
 	local grip = Util.create("TextButton", {
@@ -1114,11 +1793,13 @@ function Window:_buildTopbar(root)
 	end
 
 	local subtitle = self.Options.Subtitle
+	local searchWidth = self.IsTouch and 30 or 124
+	local controlsWidth = searchWidth + 30 + 30 + 12
 	local titleBlock = Util.create("Frame", {
 		Name = "Title",
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(0, 54, 0.5, 0),
-		Size = UDim2.new(1, -140, 0, 36),
+		Size = UDim2.new(1, -(54 + controlsWidth + 24), 0, 36),
 		BackgroundTransparency = 1,
 		ZIndex = 3,
 		Parent = topbar,
@@ -1152,7 +1833,7 @@ function Window:_buildTopbar(root)
 		Name = "Controls",
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(72, 30),
+		Size = UDim2.fromOffset(controlsWidth, 30),
 		BackgroundTransparency = 1,
 		ZIndex = 3,
 		Parent = topbar,
@@ -1160,12 +1841,83 @@ function Window:_buildTopbar(root)
 		Util.list(6, Enum.FillDirection.Horizontal, Enum.VerticalAlignment.Center, Enum.HorizontalAlignment.Right),
 	})
 
+	self:_buildSearchButton(searchWidth)
 	self:_topbarButton("Minimize", "minus", 1, function()
 		self:Minimize()
 	end)
 	self:_topbarButton("Close", "close", 2, function()
 		self:Hide()
+		-- On desktop there's no floating button, so say how to get back (once).
+		if not self._hideHintShown and not self:_wantsOpenButton() then
+			self._hideHintShown = true
+			self:Notify({
+				Title = self.Name .. " is hidden",
+				Content = ("Press %s to show it again."):format(Util.keyName(self._toggleKey)),
+			})
+		end
 	end)
+end
+
+-- "Search  Ctrl K" chip on desktop, a search icon on touch devices.
+function Window:_buildSearchButton(width)
+	local button = Util.create("TextButton", {
+		Name = "Search",
+		Size = UDim2.fromOffset(width, 30),
+		LayoutOrder = 0,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = self._controls,
+	}, {
+		Util.corner(8),
+		Util.stroke(),
+	})
+
+	local icon = Util.icon("search", 14, "TextDim")
+	icon.AnchorPoint = Vector2.new(self.IsTouch and 0.5 or 0, 0.5)
+	icon.Position = self.IsTouch and UDim2.fromScale(0.5, 0.5) or UDim2.new(0, 10, 0.5, 0)
+	icon.Parent = button
+
+	if not self.IsTouch then
+		Util.create("TextLabel", {
+			Name = "Label",
+			Position = UDim2.fromOffset(30, 0),
+			Size = UDim2.new(1, -80, 1, 0),
+			Text = "Search",
+			TextSize = 13,
+			Theme = { TextColor3 = "TextDim" },
+			Parent = button,
+		})
+		Util.create("TextLabel", {
+			Name = "Shortcut",
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -6, 0.5, 0),
+			Size = UDim2.fromOffset(42, 18),
+			Text = "Ctrl K",
+			FontFace = Util.Fonts.Medium,
+			TextSize = 10,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			BackgroundTransparency = 0,
+			Visible = self._paletteKey ~= nil,
+			Theme = {
+				BackgroundColor3 = "Input",
+				BackgroundTransparency = "InputTransparency",
+				TextColor3 = "TextMuted",
+			},
+			Parent = button,
+		}, { Util.corner(4) })
+	end
+
+	self.Maid:Give(button.MouseEnter:Connect(function()
+		Util.glyphColor(icon, "Text")
+	end))
+	self.Maid:Give(button.MouseLeave:Connect(function()
+		Util.glyphColor(icon, "TextDim")
+	end))
+	self.Maid:Give(button.Activated:Connect(function()
+		self.Palette:Toggle()
+	end))
 end
 
 function Window:_topbarButton(name, glyphKind, order, onClick)
@@ -1242,7 +1994,7 @@ function Window:_buildUserCard(sidebar)
 		Parent = avatar,
 	})
 
-	Util.create("TextLabel", {
+	local nameLabel = Util.create("TextLabel", {
 		Name = "DisplayName",
 		Position = UDim2.new(0, 56, 0.5, -15),
 		Size = UDim2.new(1, -66, 0, 16),
@@ -1254,7 +2006,7 @@ function Window:_buildUserCard(sidebar)
 		Parent = card,
 	})
 
-	Util.create("TextLabel", {
+	local usernameLabel = Util.create("TextLabel", {
 		Name = "Username",
 		Position = UDim2.new(0, 56, 0.5, 2),
 		Size = UDim2.new(1, -66, 0, 14),
@@ -1264,6 +2016,7 @@ function Window:_buildUserCard(sidebar)
 		Theme = { TextColor3 = "TextMuted" },
 		Parent = card,
 	})
+	self._userText = { nameLabel, usernameLabel }
 
 	if player and player.UserId > 0 then
 		task.spawn(function()
@@ -1314,8 +2067,15 @@ function Window:_bindInput()
 		if processed or self.Destroyed then
 			return
 		end
-		if input.KeyCode ~= Enum.KeyCode.Unknown and input.KeyCode == self._toggleKey then
+		if KeyChip.Listening then
+			return
+		end
+		if input.KeyCode ~= Enum.KeyCode.Unknown and KeyChip.matches(self._toggleKey, input) then
 			self:Toggle()
+		elseif self._paletteKey and input.KeyCode == self._paletteKey
+			and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl))
+		then
+			self.Palette:Toggle()
 		end
 	end))
 
@@ -1353,6 +2113,7 @@ function Window:_bindInput()
 			self._size = Vector2.new(width, height)
 			Spring.stop(self._holder, "Size")
 			self._holder.Size = UDim2.fromOffset(width, height)
+			self:_applySidebar(false)
 			self:_setPosition(Vector2.new(startPosition.X + (width - startSize.X) * scale / 2, startPosition.Y), false)
 		end,
 	}, maid)
@@ -1518,6 +2279,52 @@ function Window:_updateOpenButton()
 		Spring.animate(self._openScale, "Bouncy", { Scale = 1 })
 	elseif not show then
 		button.Visible = false
+	end
+end
+
+-- Sidebar = "Auto" (default) collapses to icons when the window is narrow;
+-- "Full" and "Compact" force one style.
+function Window:_wantsCompactSidebar()
+	local mode = self.Options.Sidebar
+	if mode == "Compact" then
+		return true
+	elseif mode == "Full" then
+		return false
+	end
+	return self._size.X < COMPACT_BREAKPOINT
+end
+
+function Window:_applySidebar(instant)
+	local compact = self:_wantsCompactSidebar()
+	if compact == self._compact then
+		return
+	end
+	self._compact = compact
+	local width = compact and COMPACT_SIDEBAR or self._sidebarWidth
+	local goals = {
+		[self._sidebar] = { Size = UDim2.new(0, width, 1, -TOPBAR_HEIGHT) },
+		[self._pages] = {
+			Position = UDim2.fromOffset(width, TOPBAR_HEIGHT),
+			Size = UDim2.new(1, -width, 1, -TOPBAR_HEIGHT),
+		},
+	}
+	for instance, goal in pairs(goals) do
+		if instant then
+			Spring.stop(instance)
+			for property, value in pairs(goal) do
+				instance[property] = value
+			end
+		else
+			Spring.animate(instance, "Snappy", goal)
+		end
+	end
+	for _, tab in ipairs(self.Tabs) do
+		tab:_setCompact(compact)
+	end
+	if self._userText then
+		for _, label in ipairs(self._userText) do
+			label.Visible = not compact
+		end
 	end
 end
 
@@ -1692,6 +2499,303 @@ function Window:_unregisterElement(element)
 	if index then
 		table.remove(self.Elements, index)
 	end
+	-- Keep it in the saved layout so the widget returns with the element.
+	self.Pins:Unpin(element, true)
+	Tooltip.hide(element)
+end
+
+-- Hooks called by elements
+function Window:_elementReady(element)
+	self.Config:_elementReady(element)
+	self.Pins:_elementReady(element)
+	if self._autoSave and element.Saveable and not element._autoSaveHooked then
+		element._autoSaveHooked = true
+		local queue = function()
+			self:_queueAutoSave()
+		end
+		element.Maid:Give(element.Changed:Connect(queue))
+		if element.BindChanged then
+			element.Maid:Give(element.BindChanged:Connect(queue))
+		end
+	end
+end
+
+function Window:_queueAutoSave()
+	if not self._autoSave or self._loadingAutoSave or self._autoSaveQueued then
+		return
+	end
+	self._autoSaveQueued = true
+	task.delay(1, function()
+		self._autoSaveQueued = false
+		if not self.Destroyed then
+			self.Config:Save(self._autoSave)
+		end
+	end)
+end
+
+-- Loads the AutoSave config (values for elements created later wait for them).
+function Window:_loadAutoSave()
+	if not self._autoSave then
+		return false
+	end
+	self._loadingAutoSave = true
+	local ok = self.Config:Load(self._autoSave)
+	self._loadingAutoSave = false
+	return ok
+end
+
+function Window:_elementText(element)
+	self.Pins:_elementText(element)
+end
+
+function Window:_scheduleTooltip(element)
+	Tooltip.schedule(element, function()
+		return element:_tooltipText()
+	end)
+end
+
+function Window:_hideTooltip(element)
+	Tooltip.hide(element)
+end
+
+function Window:_beginPinDrag(element, pointer)
+	Tooltip.hide()
+	self.Pins:BeginDrag(element, pointer)
+end
+
+function Window:_updatePinDrag(element, pointer)
+	self.Pins:UpdateDrag(element, pointer)
+end
+
+function Window:_endPinDrag(element, pointer)
+	self.Pins:EndDrag(element, pointer)
+end
+
+-- Right-click / long-press menu for an element.
+function Window:_openContextMenu(element, pointer)
+	if element.Destroyed then
+		return
+	end
+	local items = {}
+
+	if Pins.canPin(element) then
+		if self.Pins:IsPinned(element) then
+			table.insert(items, { Text = "Unpin widget", Icon = "pin-off", Callback = function()
+				self.Pins:Unpin(element)
+			end })
+		else
+			table.insert(items, { Text = "Pin to screen", Icon = "pin", Callback = function()
+				self.Pins:Pin(element, pointer + Vector2.new(12, 12))
+			end })
+		end
+	end
+
+	if element.Bindable and element.Keybind then
+		local key = element:GetKeybind()
+		table.insert(items, {
+			Text = key and "Change key bind" or "Add key bind",
+			Icon = "keyboard",
+			Hint = key and Util.keyName(key) or nil,
+			Callback = function()
+				element:Keybind(element:GetKeybind())
+				element._chip:Listen()
+			end,
+		})
+		if key then
+			table.insert(items, { Text = "Remove key bind", Icon = "x", Callback = function()
+				element:Keybind(nil)
+			end })
+		end
+	end
+
+	if element.Saveable then
+		if #items > 0 then
+			table.insert(items, { Separator = true })
+		end
+		if Env.CanCopy then
+			table.insert(items, { Text = "Copy value", Icon = "copy", Callback = function()
+				Env.copy(element:_display())
+			end })
+		end
+		if element._default ~= nil then
+			table.insert(items, { Text = "Reset to default", Icon = "rotate-ccw", Callback = function()
+				element:Reset()
+			end })
+		end
+	end
+
+	if #items > 0 then
+		Tooltip.hide()
+		ContextMenu.open(items, pointer)
+	end
+end
+
+---------------------------------------------------------------------------
+-- Features
+---------------------------------------------------------------------------
+
+-- Current scale of the window on screen (fit-to-screen × open animation).
+function Window:_uiScale()
+	local width = self._root.AbsoluteSize.X
+	return width > 0 and width / self._size.X or 1
+end
+
+-- Shows the window, opens the element's tab and scrolls it into view.
+function Window:Reveal(element)
+	if type(element) ~= "table" or element.Window ~= self or element.Destroyed then
+		return self
+	end
+	self:Show()
+	if self.Minimized then
+		self:Minimize(false)
+	end
+	self:SelectTab(element.Tab)
+	task.delay(0.06, function()
+		if element.Destroyed or self.Destroyed then
+			return
+		end
+		local page = element.Tab.Page
+		local scale = self:_uiScale()
+		local offset = (element.Frame.AbsolutePosition.Y - page.AbsolutePosition.Y) / scale + page.CanvasPosition.Y
+		Spring.animate(page, "Smooth", { CanvasPosition = Vector2.new(0, math.max(0, offset - 24)) })
+		element:Flash()
+		if element.Type == "Dropdown" then
+			element:Open()
+		elseif element.Type == "ColorPicker" and not element.Expanded then
+			element:_onClick()
+		elseif element.Type == "Input" then
+			element:Focus()
+		elseif element.Type == "Keybind" then
+			element:Listen()
+		end
+	end)
+	return self
+end
+
+function Window:Notify(options)
+	return Notifications.notify(options)
+end
+
+function Window:Dialog(options)
+	ContextMenu.close()
+	Tooltip.hide()
+	return Dialog.open(self, options)
+end
+
+function Window:OpenPalette()
+	self.Palette:Open()
+	return self
+end
+
+-- Adds the ready-made settings tab (theme, keys, configs, share codes, unload).
+function Window:SettingsTab(options)
+	return Settings.build(self, options)
+end
+
+-- Config API (see Features/Config): Window:SaveConfig("Legit"), Window:LoadConfig("Legit")...
+function Window:SaveConfig(name)
+	return self.Config:Save(name)
+end
+
+function Window:LoadConfig(name)
+	return self.Config:Load(name)
+end
+
+function Window:DeleteConfig(name)
+	return self.Config:Delete(name)
+end
+
+function Window:ListConfigs()
+	return self.Config:List()
+end
+
+function Window:ExportConfig()
+	return self.Config:Export()
+end
+
+function Window:ImportConfig(code)
+	return self.Config:Import(code)
+end
+
+function Window:SetAutoload(name)
+	return self.Config:SetAutoload(name)
+end
+
+-- Pins an element as a floating widget (position in screen pixels, optional).
+function Window:Pin(element, position)
+	return self.Pins:Pin(element, position)
+end
+
+function Window:Unpin(element)
+	self.Pins:Unpin(element)
+	return self
+end
+
+-- Copies the config share code; falls back to putting it in an input box.
+function Window:_copyShareCode(fallbackInput)
+	local code = self.Config:Export()
+	if Env.copy(code) then
+		self:Notify({ Title = "Config code copied", Content = "Anyone can paste it into their settings tab.", Type = "Success" })
+	elseif fallbackInput then
+		fallbackInput:Set(code, true)
+		self:Notify({ Title = "Copy the code from the box", Content = "Your executor can't copy to the clipboard.", Type = "Warning" })
+	else
+		self:Notify({ Title = "Clipboard unavailable", Content = "Open the settings tab to copy the code by hand.", Type = "Warning" })
+	end
+end
+
+---------------------------------------------------------------------------
+-- Interface preferences
+---------------------------------------------------------------------------
+
+function Window:_loadPrefs()
+	if self.Options.SavePrefs == false then
+		return
+	end
+	local prefs = self.Config:LoadPrefs()
+	if type(prefs) ~= "table" then
+		return
+	end
+	self._prefs = prefs
+	if type(prefs.Theme) == "table" then
+		Theme.deserialize(prefs.Theme, false)
+	end
+	local key = KeyChip.parse(prefs.ToggleKey)
+	if key then
+		self._toggleKey = key
+	end
+	if prefs.ReducedMotion == true then
+		self.Library:SetReducedMotion(true)
+	end
+	self.Pins:Load(prefs.Pins)
+end
+
+-- Saves preferences shortly after a change. themeChosen = the user picked a theme.
+function Window:_savePrefs(themeChosen)
+	if self.Options.SavePrefs == false or self.Destroyed then
+		return
+	end
+	if themeChosen then
+		self._saveTheme = true
+	end
+	if self._prefsQueued then
+		return
+	end
+	self._prefsQueued = true
+	task.delay(0.4, function()
+		self._prefsQueued = false
+		if self.Destroyed then
+			return
+		end
+		local prefs = self._prefs
+		prefs.ToggleKey = self._toggleKey.Name
+		prefs.ReducedMotion = self.Library.ReducedMotion == true
+		prefs.Pins = self.Pins:Serialize()
+		if self._saveTheme then
+			prefs.Theme = Theme.serialize()
+		end
+		self.Config:SavePrefs(prefs)
+	end)
 end
 
 ---------------------------------------------------------------------------
@@ -1710,9 +2814,11 @@ function Window:SetTitle(title, subtitle)
 	return self
 end
 
+-- window:SetToggleKey("K") / window:SetToggleKey(Enum.KeyCode.K)
 function Window:SetToggleKey(key)
-	if typeof(key) == "EnumItem" then
-		self._toggleKey = key
+	local parsed = KeyChip.parse(key)
+	if parsed then
+		self._toggleKey = parsed
 	end
 	return self
 end
@@ -1726,9 +2832,13 @@ function Window:Destroy()
 		return
 	end
 	self.Destroyed = true
+	self.Palette:Close()
+	ContextMenu.close()
+	Tooltip.hide()
 	for _, element in ipairs(table.clone(self.Elements)) do
 		element:Destroy()
 	end
+	self.Pins:Destroy()
 	self.VisibilityChanged:DisconnectAll()
 	self.TabChanged:DisconnectAll()
 	self.Maid:Clean()
@@ -1740,6 +2850,81 @@ function Window:Destroy()
 end
 
 return Window
+end
+
+-- ======================================================================
+-- Core/Base64
+__modules["Core/Base64"] = function()
+-- Aether · Core/Base64
+-- Plain Lua Base64 (standard alphabet, with padding) for share codes.
+
+local Base64 = {}
+
+local ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+local decodeMap = {}
+for index = 1, #ALPHABET do
+	decodeMap[string.byte(ALPHABET, index)] = index - 1
+end
+
+function Base64.encode(data)
+	local out = table.create(math.ceil(#data / 3) * 4)
+	for index = 1, #data, 3 do
+		local a, b, c = string.byte(data, index, index + 2)
+		local n = a * 65536 + (b or 0) * 256 + (c or 0)
+		local c1 = math.floor(n / 262144) % 64
+		local c2 = math.floor(n / 4096) % 64
+		local c3 = math.floor(n / 64) % 64
+		local c4 = n % 64
+		table.insert(out, string.sub(ALPHABET, c1 + 1, c1 + 1))
+		table.insert(out, string.sub(ALPHABET, c2 + 1, c2 + 1))
+		table.insert(out, b and string.sub(ALPHABET, c3 + 1, c3 + 1) or "=")
+		table.insert(out, c and string.sub(ALPHABET, c4 + 1, c4 + 1) or "=")
+	end
+	return table.concat(out)
+end
+
+-- Returns the decoded string, or nil if the input isn't valid Base64.
+function Base64.decode(text)
+	text = string.gsub(text, "%s", "")
+	if #text % 4 ~= 0 then
+		return nil
+	end
+	local out = {}
+	for index = 1, #text, 4 do
+		local values = {}
+		local padding = 0
+		for offset = 0, 3 do
+			local byte = string.byte(text, index + offset)
+			if byte == 61 then -- "="
+				padding += 1
+				values[offset + 1] = 0
+			else
+				local value = decodeMap[byte]
+				if value == nil or padding > 0 then
+					return nil
+				end
+				values[offset + 1] = value
+			end
+		end
+		local n = values[1] * 262144 + values[2] * 4096 + values[3] * 64 + values[4]
+		local a = math.floor(n / 65536) % 256
+		local b = math.floor(n / 256) % 256
+		local c = n % 256
+		if padding == 0 then
+			table.insert(out, string.char(a, b, c))
+		elseif padding == 1 then
+			table.insert(out, string.char(a, b))
+		elseif padding == 2 then
+			table.insert(out, string.char(a))
+		else
+			return nil
+		end
+	end
+	return table.concat(out)
+end
+
+return Base64
 end
 
 -- ======================================================================
@@ -1968,6 +3153,105 @@ function Env.mount(gui)
 end
 
 return Env
+end
+
+-- ======================================================================
+-- Core/Fuzzy
+__modules["Core/Fuzzy"] = function()
+-- Aether · Core/Fuzzy
+-- Small fuzzy matcher for the command palette: every query character must
+-- appear in order. Consecutive matches, word starts and exact substrings
+-- score higher; shorter texts win ties.
+
+local Fuzzy = {}
+
+-- Word starts: the first character, anything after a separator, and
+-- camelCase humps ("WalkSpeed" starts a word at "S").
+local function isBoundary(original, index)
+	if index == 1 then
+		return true
+	end
+	local previous = string.sub(original, index - 1, index - 1)
+	if string.find(previous, "[%s%-_/%.]") then
+		return true
+	end
+	local current = string.sub(original, index, index)
+	return string.find(previous, "%l") ~= nil and string.find(current, "%u") ~= nil
+end
+
+-- Returns score, matchedIndices (or nil when the query doesn't match).
+function Fuzzy.match(query, text)
+	query = string.lower(query)
+	local lower = string.lower(text)
+	if query == "" then
+		return 0, {}
+	end
+
+	local indices = {}
+	local score = 0
+	local queryIndex = 1
+	local previous = -1
+	for index = 1, #lower do
+		if queryIndex > #query then
+			break
+		end
+		if string.sub(lower, index, index) == string.sub(query, queryIndex, queryIndex) then
+			local bonus = 1
+			if index == previous + 1 then
+				bonus += 4
+			end
+			if isBoundary(text, index) then
+				bonus += 6
+			end
+			score += bonus
+			table.insert(indices, index)
+			previous = index
+			queryIndex += 1
+		end
+	end
+	if queryIndex <= #query then
+		return nil
+	end
+
+	local exact = string.find(lower, query, 1, true)
+	if exact then
+		score += 12
+		if exact == 1 then
+			score += 8
+		end
+	end
+	score -= (#lower - #query) * 0.05
+	return score, indices
+end
+
+local function escape(text)
+	return (string.gsub(string.gsub(string.gsub(text, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"))
+end
+
+-- RichText with the matched characters coloured.
+function Fuzzy.highlight(text, indices, hexColor)
+	if not indices or #indices == 0 then
+		return escape(text)
+	end
+	local marked = {}
+	for _, index in ipairs(indices) do
+		marked[index] = true
+	end
+	local parts = {}
+	for index = 1, #text do
+		local char = escape(string.sub(text, index, index))
+		if marked[index] then
+			table.insert(parts, ('<font color="#%s">%s</font>'):format(hexColor, char))
+		else
+			table.insert(parts, char)
+		end
+	end
+	return table.concat(parts)
+end
+
+Fuzzy.escape = escape
+
+return Fuzzy
 end
 
 -- ======================================================================
@@ -3042,6 +4326,8 @@ local AETHER = {
 	IndicatorTransparency = 0.84,
 
 	Control = hex("#2A2A3D"),
+	Input = hex("#FFFFFF"),
+	InputTransparency = 0.95,
 
 	Stroke = hex("#FFFFFF"),
 	StrokeTransparency = 0.9,
@@ -3102,6 +4388,8 @@ Theme.Presets = {
 		HoverTransparency = 0.95,
 		IndicatorTransparency = 0.88,
 		Control = hex("#DCDCE6"),
+		Input = hex("#000000"),
+		InputTransparency = 0.955,
 		Stroke = hex("#000000"),
 		StrokeTransparency = 0.9,
 		Divider = hex("#000000"),
@@ -3269,6 +4557,49 @@ function Theme.clear()
 end
 
 ---------------------------------------------------------------------------
+-- Serialization (theme share codes, saved preferences)
+---------------------------------------------------------------------------
+
+-- The current theme as JSON-safe data: colours as hex, numbers as numbers.
+function Theme.serialize()
+	local tokens = {}
+	for key, value in pairs(current) do
+		if typeof(value) == "Color3" then
+			tokens[key] = "#" .. value:ToHex()
+		elseif type(value) == "number" then
+			tokens[key] = value
+		end
+	end
+	return { Name = Theme.Name, Tokens = tokens }
+end
+
+-- Applies serialized theme data. Unknown keys and bad values are skipped.
+function Theme.deserialize(data, animate)
+	if type(data) ~= "table" or type(data.Tokens) ~= "table" then
+		return false
+	end
+	local overrides = {}
+	for key, value in pairs(data.Tokens) do
+		local base = AETHER[key]
+		if typeof(base) == "Color3" and type(value) == "string" then
+			local ok, color = pcall(Color3.fromHex, value)
+			if ok then
+				overrides[key] = color
+			end
+		elseif type(base) == "number" and type(value) == "number" then
+			overrides[key] = math.clamp(value, 0, 1)
+		end
+	end
+	if next(overrides) == nil then
+		return false
+	end
+	-- Start from the default theme so every token is defined.
+	current = table.clone(AETHER)
+	overrides.Name = type(data.Name) == "string" and data.Name or "Custom"
+	return Theme.set(overrides, animate)
+end
+
+---------------------------------------------------------------------------
 -- Computed tokens shared by several components
 ---------------------------------------------------------------------------
 
@@ -3288,6 +4619,7 @@ __modules["Core/Util"] = function()
 
 local Env = import("Core/Env")
 local Theme = import("Core/Theme")
+local Icons = import("Core/Icons")
 
 local UserInputService = Env.service("UserInputService")
 local GuiService = Env.service("GuiService")
@@ -3708,8 +5040,28 @@ function Util.glyph(kind, options)
 	return container
 end
 
--- Springs every stroke of a glyph to a new colour token.
+-- A Lucide icon as an ImageLabel, tinted with a theme token.
+function Util.icon(name, size, colorToken)
+	local image = Util.create("ImageLabel", {
+		Name = "Icon",
+		Size = UDim2.fromOffset(size or 16, size or 16),
+		Theme = { ImageColor3 = colorToken or "TextDim" },
+	})
+	Icons.apply(image, name)
+	return image
+end
+
+-- Changes the icon shown by an image created with Util.icon.
+function Util.iconSet(image, name)
+	return Icons.apply(image, name)
+end
+
+-- Springs every stroke of a glyph (or an icon image) to a new colour token.
 function Util.glyphColor(glyph, token)
+	if glyph:IsA("ImageLabel") then
+		Theme.animate(glyph, { ImageColor3 = token })
+		return
+	end
 	for _, part in ipairs(glyph:GetDescendants()) do
 		if part:IsA("Frame") and part.Name == "Stroke" then
 			Theme.animate(part, { BackgroundColor3 = token })
@@ -3727,40 +5079,61 @@ end
 __modules["Elements/Button"] = function()
 -- Aether · Elements/Button
 --   Tab:Button({ Name = "Rejoin", Description = "...", Callback = fn })
---   Tab:Button("Rejoin"):OnClick(fn)
+--   Tab:Button("Rejoin"):OnClick(fn):Keybind("R")
 
 local Util = import("Core/Util")
 local Spring = import("Core/Spring")
 local Element = import("Components/Element")
 local Elements = import("Components/Elements")
+local KeyChip = import("Components/KeyChip")
 
 local Button = Element.extend("Button")
+Button.Pinnable = true
+Button.Bindable = true
+
+local CHEVRON_WIDTH = 16
 
 function Button.new(section, options)
 	local self = setmetatable({}, Button)
 	Element.init(self, section, options, {
-		Interactive = true,
-		ControlWidth = 16,
-		ControlHeight = 16,
+		Clickable = true,
+		ControlWidth = CHEVRON_WIDTH,
+		ControlHeight = 26,
 	})
 	self.Clicked = self.Changed
 
+	Util.create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 8),
+		Parent = self.Control,
+	})
+
+	-- The chevron sits in a fixed slot so its hover nudge doesn't fight the layout.
+	local slot = Util.create("Frame", {
+		Name = "ChevronSlot",
+		Size = UDim2.fromOffset(CHEVRON_WIDTH, 16),
+		BackgroundTransparency = 1,
+		LayoutOrder = 2,
+		Parent = self.Control,
+	})
 	local chevron = Util.glyph("chevron-right", { Size = 14, Color = "TextMuted" })
 	chevron.AnchorPoint = Vector2.new(1, 0.5)
 	chevron.Position = UDim2.fromScale(1, 0.5)
-	chevron.Parent = self.Control
+	chevron.Parent = slot
 	self._chevron = chevron
 
-	self.Maid:Give(self.Hitbox.InputBegan:Connect(function(input)
-		if Util.isPress(input) and not self.Disabled then
-			self:_ripple(input)
-		end
-	end))
-	self.Maid:Give(self.Hitbox.Activated:Connect(function()
-		self:Press()
-	end))
+	if options.Keybind then
+		self:Keybind(options.Keybind)
+	end
 
 	return self:_ready()
+end
+
+function Button:_onClick()
+	self:Press()
 end
 
 -- Runs the callbacks as if the button was clicked.
@@ -3775,14 +5148,1315 @@ function Button:OnClick(handler)
 	return self:OnChanged(handler)
 end
 
+-- Rayfield: button:Set("New name")
+function Button:Set(text)
+	return self:SetTitle(text)
+end
+
 function Button:_onHover(hovered)
 	Util.glyphColor(self._chevron, hovered and "Text" or "TextMuted")
 	Spring.animate(self._chevron, "Bouncy", { Position = UDim2.new(1, hovered and 3 or 0, 0.5, 0) })
 end
 
+-- Binds a key that presses the button: button:Keybind("R") / button:Keybind(Enum.KeyCode.R)
+function Button:Keybind(key)
+	if not self._chip then
+		self._chip = KeyChip.new({
+			Parent = self.Control,
+			LayoutOrder = 1,
+			Maid = self.Maid,
+			AllowNone = true,
+			OnResize = function(width)
+				self:_setControlWidth(CHEVRON_WIDTH + (width > 0 and width + 8 or 0))
+			end,
+			OnTriggered = function(began)
+				if began then
+					self:Press()
+				end
+			end,
+		})
+	end
+	self._chip:SetKey(key)
+	return self
+end
+
+function Button:GetKeybind()
+	return self._chip and self._chip.Key or nil
+end
+
+function Button:_display()
+	return self._chip and self._chip.Key and ("Key: " .. Util.keyName(self._chip.Key)) or ""
+end
+
 Elements.register("Button", Button)
 
 return Button
+end
+
+-- ======================================================================
+-- Elements/ColorPicker
+__modules["Elements/ColorPicker"] = function()
+-- Aether · Elements/ColorPicker
+--   Tab:ColorPicker({ Name = "ESP color", Default = Color3.fromRGB(139, 92, 246), Callback = function(color) end })
+--   Transparency = 0.2 adds a transparency bar; the callback then gets (color, transparency).
+-- Includes a hex field and a rainbow mode.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+
+local RunService = Env.service("RunService")
+
+local ColorPicker = Element.extend("ColorPicker")
+ColorPicker.Saveable = true
+ColorPicker.Pinnable = false
+
+local SV_HEIGHT = 120
+local BAR_HEIGHT = 14
+local ROW_HEIGHT = 28
+local GAP = 6
+local RAINBOW_SPEED = 0.2 -- hue cycles per second
+local RAINBOW_RATE = 1 / 20 -- max callback rate in rainbow mode
+
+local function toColor(value)
+	if typeof(value) == "Color3" then
+		return value
+	end
+	if type(value) == "string" then
+		local ok, color = pcall(Color3.fromHex, value)
+		if ok then
+			return color
+		end
+	end
+	return nil
+end
+
+local RAINBOW = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+	ColorSequenceKeypoint.new(1 / 6, Color3.fromRGB(255, 255, 0)),
+	ColorSequenceKeypoint.new(2 / 6, Color3.fromRGB(0, 255, 0)),
+	ColorSequenceKeypoint.new(3 / 6, Color3.fromRGB(0, 255, 255)),
+	ColorSequenceKeypoint.new(4 / 6, Color3.fromRGB(0, 0, 255)),
+	ColorSequenceKeypoint.new(5 / 6, Color3.fromRGB(255, 0, 255)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
+})
+
+local function cursorRing(size)
+	return Util.create("Frame", {
+		Name = "Cursor",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Size = UDim2.fromOffset(size, size),
+		BackgroundTransparency = 1,
+		ZIndex = 3,
+	}, {
+		Util.corner("full"),
+		Util.create("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 2 }),
+	})
+end
+
+function ColorPicker.new(section, options)
+	local self = setmetatable({}, ColorPicker)
+	local color = toColor(options.Default or options.Color or options.Value) or Color3.fromRGB(139, 92, 246)
+	local transparency = tonumber(options.Transparency or options.Alpha)
+	self._hasAlpha = transparency ~= nil
+	self.Transparency = transparency or 0
+	self.Rainbow = false
+
+	Element.init(self, section, options, {
+		Clickable = true,
+		ControlWidth = 44,
+		ControlHeight = 24,
+		Panel = true,
+	})
+
+	self._swatch = Util.create("Frame", {
+		Name = "Swatch",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = color,
+		Parent = self.Control,
+	}, {
+		Util.corner(6),
+		Util.stroke(),
+	})
+
+	local panel = self.PanelInner
+
+	-- Saturation / value square
+	local sv = Util.create("TextButton", {
+		Name = "SV",
+		Size = UDim2.new(1, 0, 0, SV_HEIGHT),
+		BackgroundColor3 = Color3.new(1, 0, 0),
+		BackgroundTransparency = 0,
+		LayoutOrder = 1,
+		Parent = panel,
+	}, { Util.corner(6) })
+	Util.create("Frame", {
+		Name = "White",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Parent = sv,
+	}, {
+		Util.corner(6),
+		Util.create("UIGradient", {
+			Transparency = NumberSequence.new(0, 1),
+		}),
+	})
+	Util.create("Frame", {
+		Name = "Black",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		ZIndex = 2,
+		Parent = sv,
+	}, {
+		Util.corner(6),
+		Util.create("UIGradient", {
+			Rotation = 90,
+			Transparency = NumberSequence.new(1, 0),
+		}),
+	})
+	self._svCursor = cursorRing(12)
+	self._svCursor.Parent = sv
+	self._sv = sv
+
+	-- Hue bar
+	local hue = Util.create("TextButton", {
+		Name = "Hue",
+		Size = UDim2.new(1, 0, 0, BAR_HEIGHT),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0,
+		LayoutOrder = 2,
+		Parent = panel,
+	}, {
+		Util.corner("full"),
+		Util.create("UIGradient", { Color = RAINBOW }),
+	})
+	self._hueCursor = cursorRing(BAR_HEIGHT + 2)
+	self._hueCursor.Parent = hue
+	self._hue = hue
+
+	-- Transparency bar (optional)
+	if self._hasAlpha then
+		local alpha = Util.create("TextButton", {
+			Name = "Alpha",
+			Size = UDim2.new(1, 0, 0, BAR_HEIGHT),
+			BackgroundColor3 = color,
+			BackgroundTransparency = 0,
+			LayoutOrder = 3,
+			Parent = panel,
+		}, {
+			Util.corner("full"),
+			Util.stroke(),
+			Util.create("UIGradient", { Transparency = NumberSequence.new(1, 0) }),
+		})
+		self._alphaCursor = cursorRing(BAR_HEIGHT + 2)
+		self._alphaCursor.Parent = alpha
+		self._alpha = alpha
+	end
+
+	-- Hex field, RGB readout and rainbow switch
+	local row = Util.create("Frame", {
+		Name = "Row",
+		Size = UDim2.new(1, 0, 0, ROW_HEIGHT),
+		BackgroundTransparency = 1,
+		LayoutOrder = 4,
+		Parent = panel,
+	}, { Util.list(8, Enum.FillDirection.Horizontal, Enum.VerticalAlignment.Center) })
+
+	self._hex = Util.create("TextBox", {
+		Name = "Hex",
+		Size = UDim2.fromOffset(84, ROW_HEIGHT),
+		FontFace = Util.Fonts.Mono,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		LayoutOrder = 1,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "Text",
+		},
+		Parent = row,
+	}, { Util.corner(6) })
+
+	self._rgb = Util.create("TextLabel", {
+		Name = "RGB",
+		Size = UDim2.new(1, -176, 1, 0),
+		TextSize = 12,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		LayoutOrder = 2,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = row,
+	})
+
+	self._rainbowButton = Util.create("TextButton", {
+		Name = "Rainbow",
+		Size = UDim2.fromOffset(76, ROW_HEIGHT),
+		Text = "Rainbow",
+		TextSize = 12,
+		LayoutOrder = 3,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "TextDim",
+		},
+		Parent = row,
+	}, {
+		Util.corner(6),
+		Util.stroke(),
+	})
+
+	-- Input
+	Util.draggable(sv, {
+		Start = function(input)
+			self:_pickSV(Util.pointer(input))
+		end,
+		Move = function(_, pointer)
+			self:_pickSV(pointer)
+		end,
+	}, self.Maid)
+	Util.draggable(hue, {
+		Start = function(input)
+			self:_pickHue(Util.pointer(input))
+		end,
+		Move = function(_, pointer)
+			self:_pickHue(pointer)
+		end,
+	}, self.Maid)
+	if self._alpha then
+		Util.draggable(self._alpha, {
+			Start = function(input)
+				self:_pickAlpha(Util.pointer(input))
+			end,
+			Move = function(_, pointer)
+				self:_pickAlpha(pointer)
+			end,
+		}, self.Maid)
+	end
+
+	self.Maid:Give(self._hex.FocusLost:Connect(function()
+		local text = string.gsub(self._hex.Text, "[^%x]", "")
+		local parsed = #text == 6 and toColor(text) or nil
+		if parsed then
+			self:SetRainbow(false)
+			self:Set(parsed, self.Transparency)
+		else
+			self:_render()
+		end
+	end))
+
+	self.Maid:Give(self._rainbowButton.Activated:Connect(function()
+		self:SetRainbow(not self.Rainbow)
+	end))
+
+	self._h, self._s, self._v = color:ToHSV()
+	self._default = { Color = color, Transparency = self.Transparency }
+	self:_publish(color)
+	self:_render()
+
+	if options.Rainbow then
+		self:SetRainbow(true)
+	end
+	return self:_ready()
+end
+
+local function relative(frame, pointer)
+	local position, size = frame.AbsolutePosition, frame.AbsoluteSize
+	if size.X <= 0 or size.Y <= 0 then
+		return 0, 0
+	end
+	return math.clamp((pointer.X - position.X) / size.X, 0, 1), math.clamp((pointer.Y - position.Y) / size.Y, 0, 1)
+end
+
+function ColorPicker:_pickSV(pointer)
+	if self.Disabled then
+		return
+	end
+	local x, y = relative(self._sv, pointer)
+	self._s, self._v = x, 1 - y
+	self:SetRainbow(false)
+	self:_commitHSV()
+end
+
+function ColorPicker:_pickHue(pointer)
+	if self.Disabled then
+		return
+	end
+	local x = relative(self._hue, pointer)
+	self._h = math.clamp(x, 0, 0.9999)
+	self:SetRainbow(false)
+	self:_commitHSV()
+end
+
+function ColorPicker:_pickAlpha(pointer)
+	if self.Disabled then
+		return
+	end
+	local x = relative(self._alpha, pointer)
+	self:Set(self.Value, 1 - x)
+end
+
+function ColorPicker:_commitHSV(silent)
+	self:_apply(Color3.fromHSV(self._h, self._s, self._v), self.Transparency, silent, false, true)
+end
+
+-- Updates the value; keepHSV avoids losing hue/saturation at black or grey.
+function ColorPicker:_apply(color, transparency, silent, force, keepHSV)
+	transparency = math.clamp(tonumber(transparency) or self.Transparency, 0, 1)
+	local changed = self.Value == nil or color:ToHex() ~= self.Value:ToHex() or math.abs(transparency - self.Transparency) > 1e-3
+	if not keepHSV then
+		self._h, self._s, self._v = color:ToHSV()
+	end
+	self.Transparency = transparency
+	self:_publish(color)
+	self:_render()
+	if (changed or force) and not silent then
+		if self._hasAlpha then
+			self.Changed:Fire(color, transparency)
+		else
+			self.Changed:Fire(color)
+		end
+	end
+end
+
+function ColorPicker:_render()
+	local color = self.Value
+	self._swatch.BackgroundColor3 = color
+	self._swatch.BackgroundTransparency = self._hasAlpha and self.Transparency * 0.85 or 0
+	self._sv.BackgroundColor3 = Color3.fromHSV(self._h, 1, 1)
+	self._svCursor.Position = UDim2.fromScale(self._s, 1 - self._v)
+	self._hueCursor.Position = UDim2.fromScale(self._h, 0.5)
+	if self._alpha then
+		self._alpha.BackgroundColor3 = color
+		self._alphaCursor.Position = UDim2.fromScale(1 - self.Transparency, 0.5)
+	end
+	if not self._hex:IsFocused() then
+		self._hex.Text = "#" .. string.upper(color:ToHex())
+	end
+	self._rgb.Text = ("%d, %d, %d"):format(
+		math.floor(color.R * 255 + 0.5),
+		math.floor(color.G * 255 + 0.5),
+		math.floor(color.B * 255 + 0.5)
+	)
+end
+
+function ColorPicker:_publish(value)
+	Element._publish(self, value)
+	self.Color = value -- Rayfield's name for it
+end
+
+function ColorPicker:_panelHeight()
+	local height = SV_HEIGHT + GAP + BAR_HEIGHT + GAP + ROW_HEIGHT + 10
+	if self._hasAlpha then
+		height += BAR_HEIGHT + GAP
+	end
+	return height
+end
+
+function ColorPicker:_onClick()
+	self:_setExpanded(not self.Expanded, self:_panelHeight())
+end
+
+-- picker:Set(Color3.new(1, 0, 0)) · picker:Set("#FF0000") · picker:Set(color, 0.5)
+function ColorPicker:Set(color, transparency, silent, force)
+	-- Configs call Set(data, silent, force) with a table.
+	if type(color) == "table" then
+		force, silent = silent, transparency
+		transparency = color.Transparency
+		if color.Rainbow ~= nil then
+			self:SetRainbow(color.Rainbow == true)
+		end
+		color = color.Color
+	elseif type(transparency) == "boolean" then
+		force, silent, transparency = silent, transparency, nil
+	end
+	local parsed = toColor(color)
+	if not parsed then
+		return self
+	end
+	self:_apply(parsed, transparency, silent, force)
+	return self
+end
+
+function ColorPicker:Get()
+	return self.Value, self.Transparency
+end
+
+function ColorPicker:SetRainbow(enabled)
+	enabled = enabled == true
+	if enabled == self.Rainbow then
+		return self
+	end
+	self.Rainbow = enabled
+	Theme.animate(self._rainbowButton, { TextColor3 = enabled and "Accent" or "TextDim" })
+	if self._rainbowConnection then
+		self._rainbowConnection:Disconnect()
+		self._rainbowConnection = nil
+	end
+	if enabled then
+		local sinceFire = 0
+		if self._s < 0.2 then
+			self._s = 1
+		end
+		if self._v < 0.2 then
+			self._v = 1
+		end
+		self._rainbowConnection = self.Maid:Give(RunService.Heartbeat:Connect(function(dt)
+			if self.Disabled then
+				return
+			end
+			self._h = (self._h + dt * RAINBOW_SPEED) % 1
+			sinceFire += dt
+			local fire = sinceFire >= RAINBOW_RATE
+			if fire then
+				sinceFire = 0
+			end
+			self:_commitHSV(not fire)
+		end))
+	end
+	return self
+end
+
+function ColorPicker:_serialize()
+	return {
+		Color = self.Value:ToHex(),
+		Transparency = self.Transparency,
+		Rainbow = self.Rainbow,
+	}
+end
+
+function ColorPicker:_display()
+	return "#" .. string.upper(self.Value:ToHex())
+end
+
+function ColorPicker:Reset()
+	self:SetRainbow(false)
+	return self:Set(self._default.Color, self._default.Transparency)
+end
+
+function ColorPicker:_onExpanded(expanded)
+	Spring.animate(self._swatch, "Bouncy", { Size = expanded and UDim2.new(1, 0, 1, 4) or UDim2.fromScale(1, 1) })
+end
+
+Elements.register("ColorPicker", ColorPicker)
+
+return ColorPicker
+end
+
+-- ======================================================================
+-- Elements/Divider
+__modules["Elements/Divider"] = function()
+-- Aether · Elements/Divider
+--   Tab:Divider()   a thin line between groups of elements
+
+local Util = import("Core/Util")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+
+local Divider = Element.extend("Divider")
+
+function Divider.new(section, options)
+	local self = setmetatable({}, Divider)
+	Element.init(self, section, options, {
+		NoText = true,
+		Stacked = true,
+		Height = 13,
+		PaddingY = 6,
+		ControlHeight = 1,
+	})
+	Util.create("Frame", {
+		Name = "Line",
+		Size = UDim2.fromScale(1, 1),
+		Theme = {
+			BackgroundColor3 = "Divider",
+			BackgroundTransparency = "DividerTransparency",
+		},
+		Parent = self.Control,
+	})
+	return self:_ready()
+end
+
+Elements.register("Divider", Divider)
+
+return Divider
+end
+
+-- ======================================================================
+-- Elements/Dropdown
+__modules["Elements/Dropdown"] = function()
+-- Aether · Elements/Dropdown
+--   Tab:Dropdown({ Name = "Weapon", Options = { "Sword", "Bow" }, Default = "Sword", Callback = function(v) end })
+--   Tab:Dropdown({ Name = "Targets", Options = players, Multi = true, Callback = function(list) end })
+-- Single-select passes a string (or nil); multi-select passes an array.
+-- Also accepts Rayfield's CurrentOption / MultipleOptions and Fluent's Values.
+
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+
+local Dropdown = Element.extend("Dropdown")
+Dropdown.Saveable = true
+Dropdown.Pinnable = true
+
+local OPTION_HEIGHT = 30
+local OPTION_GAP = 2
+local SEARCH_HEIGHT = 30
+
+local function toList(values)
+	local list = {}
+	if type(values) == "table" then
+		for _, value in ipairs(values) do
+			table.insert(list, tostring(value))
+		end
+	end
+	return list
+end
+
+function Dropdown.new(section, options)
+	local self = setmetatable({}, Dropdown)
+	self.Multi = options.Multi == true or options.MultipleOptions == true or options.Multiple == true
+	self._list = toList(options.Options or options.Values or options.List)
+	self.Values = self._list
+	self._placeholder = options.Placeholder or "Select..."
+	self._allowNone = options.AllowNone == true
+	self._maxVisible = options.MaxVisible or 6
+	self._search = options.Search
+	self._query = ""
+
+	-- Rayfield passes a table to single-select callbacks; CreateDropdown keeps that.
+	if options.__compat == "Rayfield" and not self.Multi and type(options.Callback) == "function" then
+		local callback = options.Callback
+		options.Callback = function(value)
+			return callback(value == nil and {} or { value })
+		end
+	end
+
+	local touch = section.Window.IsTouch
+	Element.init(self, section, options, {
+		Clickable = true,
+		ControlWidth = options.Width or (touch and 150 or 176),
+		ControlHeight = 30,
+		Panel = true,
+	})
+
+	-- Selected value box
+	local box = Util.create("Frame", {
+		Name = "Box",
+		Size = UDim2.fromScale(1, 1),
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = self.Control,
+	}, {
+		Util.corner(7),
+		Util.stroke(),
+	})
+	self._box = box
+
+	self._valueLabel = Util.create("TextLabel", {
+		Name = "Value",
+		Position = UDim2.fromOffset(10, 0),
+		Size = UDim2.new(1, -34, 1, 0),
+		TextSize = 13,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = box,
+	})
+
+	local chevron = Util.glyph("chevron-down", { Size = 12, Color = "TextDim", Thickness = 2 })
+	chevron.AnchorPoint = Vector2.new(1, 0.5)
+	chevron.Position = UDim2.new(1, -10, 0.5, 0)
+	chevron.Parent = box
+	self._chevron = chevron
+
+	-- Panel: optional search box and the option list
+	local panel = self.PanelInner
+	self._searchBox = Util.create("Frame", {
+		Name = "Search",
+		Size = UDim2.new(1, 0, 0, SEARCH_HEIGHT),
+		LayoutOrder = 1,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = panel,
+	}, {
+		Util.corner(7),
+		Util.stroke(),
+	})
+	local searchIcon = Util.icon("search", 14, "TextMuted")
+	searchIcon.AnchorPoint = Vector2.new(0, 0.5)
+	searchIcon.Position = UDim2.new(0, 9, 0.5, 0)
+	searchIcon.Parent = self._searchBox
+	self._searchInput = Util.create("TextBox", {
+		Name = "Input",
+		Position = UDim2.fromOffset(30, 0),
+		Size = UDim2.new(1, -38, 1, 0),
+		PlaceholderText = "Search...",
+		TextSize = 13,
+		Theme = { TextColor3 = "Text", PlaceholderColor3 = "TextMuted" },
+		Parent = self._searchBox,
+	})
+
+	self._scroller = Util.create("ScrollingFrame", {
+		Name = "List",
+		Size = UDim2.new(1, 0, 0, OPTION_HEIGHT),
+		LayoutOrder = 2,
+		ScrollBarThickness = 2,
+		Theme = { ScrollBarImageColor3 = "TextMuted" },
+		Parent = panel,
+	}, { Util.list(OPTION_GAP) })
+
+	self._empty = Util.create("TextLabel", {
+		Name = "Empty",
+		Size = UDim2.new(1, 0, 0, OPTION_HEIGHT),
+		Text = "No results",
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Visible = false,
+		LayoutOrder = 1e6,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = self._scroller,
+	})
+
+	self._buttons = {}
+	self.Maid:Give(self._searchInput:GetPropertyChangedSignal("Text"):Connect(function()
+		self._query = string.lower(tostring(self._searchInput.Text))
+		self:_filter()
+	end))
+
+	-- Initial value
+	local default = options.Default
+	if default == nil then
+		default = options.CurrentOption
+	end
+	if default == nil then
+		default = options.Value
+	end
+	self.Value = self.Multi and {} or nil
+	self:_buildOptions()
+	self:_apply(default)
+	self._default = self:_copyValue()
+	self:_publish(self:_copyValue())
+	self:_refreshDisplay()
+	return self:_ready()
+end
+
+function Dropdown:_copyValue()
+	if self.Multi then
+		return table.clone(self.Value or {})
+	end
+	return self.Value
+end
+
+function Dropdown:_publish(value)
+	Element._publish(self, value)
+	-- Rayfield-style field: always a table.
+	if self.Multi then
+		self.CurrentOption = table.clone(value or {})
+	else
+		self.CurrentOption = value == nil and {} or { value }
+	end
+end
+
+function Dropdown:_isSelected(option)
+	if self.Multi then
+		return table.find(self.Value, option) ~= nil
+	end
+	return self.Value == option
+end
+
+-- Normalizes any accepted input into the current value (without callbacks).
+function Dropdown:_apply(value)
+	if self.Multi then
+		local wanted = {}
+		if type(value) == "table" then
+			for _, item in ipairs(value) do
+				wanted[tostring(item)] = true
+			end
+		elseif value ~= nil then
+			wanted[tostring(value)] = true
+		end
+		local result = {}
+		for _, option in ipairs(self._list) do
+			if wanted[option] then
+				table.insert(result, option)
+			end
+		end
+		self.Value = result
+	else
+		if type(value) == "table" then
+			value = value[1]
+		end
+		value = value ~= nil and tostring(value) or nil
+		-- Unknown options are ignored; nil clears the selection.
+		if value ~= nil and not table.find(self._list, value) then
+			if not table.find(self._list, self.Value) then
+				self.Value = nil
+			end
+			return
+		end
+		self.Value = value
+	end
+end
+
+function Dropdown:_buildOptions()
+	for _, button in pairs(self._buttons) do
+		button:Destroy()
+	end
+	table.clear(self._buttons)
+
+	for index, option in ipairs(self._list) do
+		local button = Util.create("TextButton", {
+			Name = option,
+			Size = UDim2.new(1, -4, 0, OPTION_HEIGHT),
+			LayoutOrder = index,
+			BackgroundTransparency = 1,
+			Theme = { BackgroundColor3 = "Accent" },
+			Parent = self._scroller,
+		}, { Util.corner(6) })
+
+		Util.create("TextLabel", {
+			Name = "Label",
+			Position = UDim2.fromOffset(10, 0),
+			Size = UDim2.new(1, -40, 1, 0),
+			Text = option,
+			TextSize = 13,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Theme = { TextColor3 = "TextDim" },
+			Parent = button,
+		})
+
+		local check = Util.glyph("check", { Size = 14, Color = "Accent" })
+		check.AnchorPoint = Vector2.new(1, 0.5)
+		check.Position = UDim2.new(1, -10, 0.5, 0)
+		check.Visible = false
+		check.Parent = button
+
+		self.Maid:Give(button.MouseEnter:Connect(function()
+			if not self:_isSelected(option) then
+				Theme.animate(button, { BackgroundColor3 = "ElementHover", BackgroundTransparency = "HoverTransparency" })
+			end
+		end))
+		self.Maid:Give(button.MouseLeave:Connect(function()
+			self:_paintOption(option)
+		end))
+		self.Maid:Give(button.Activated:Connect(function()
+			self:_choose(option)
+		end))
+
+		self._buttons[option] = button
+	end
+	self:_filter()
+end
+
+function Dropdown:_paintOption(option)
+	local button = self._buttons[option]
+	if not button then
+		return
+	end
+	local selected = self:_isSelected(option)
+	Theme.animate(button, {
+		BackgroundColor3 = selected and "Accent" or "ElementHover",
+		BackgroundTransparency = selected and 0.86 or 1,
+	})
+	Theme.animate(button.Label, { TextColor3 = selected and "Text" or "TextDim" })
+	button.Glyph.Visible = selected
+end
+
+function Dropdown:_filter()
+	local visible = 0
+	local query = self._query
+	for _, option in ipairs(self._list) do
+		local button = self._buttons[option]
+		local show = query == "" or string.find(string.lower(option), query, 1, true) ~= nil
+		button.Visible = show
+		if show then
+			visible += 1
+		end
+		self:_paintOption(option)
+	end
+	self._visibleCount = visible
+	self._empty.Visible = visible == 0
+	local rows = math.clamp(visible, 1, self._maxVisible)
+	self._scroller.Size = UDim2.new(1, 0, 0, rows * OPTION_HEIGHT + (rows - 1) * OPTION_GAP)
+	if self.Expanded then
+		self:_setExpanded(true, self:_panelHeight())
+	end
+end
+
+function Dropdown:_searchEnabled()
+	if self._search ~= nil then
+		return self._search == true
+	end
+	return #self._list > 7
+end
+
+function Dropdown:_panelHeight()
+	local rows = math.clamp(self._visibleCount or #self._list, 1, self._maxVisible)
+	local list = rows * OPTION_HEIGHT + (rows - 1) * OPTION_GAP
+	local search = self._searchBox.Visible and (SEARCH_HEIGHT + 6) or 0
+	return search + list + 10
+end
+
+function Dropdown:_refreshDisplay()
+	local text, placeholder
+	if self.Multi then
+		local count = #self.Value
+		if count == 0 then
+			text, placeholder = self._placeholder, true
+		elseif count <= 2 then
+			text = table.concat(self.Value, ", ")
+		else
+			text = ("%d selected"):format(count)
+		end
+	else
+		text = self.Value or self._placeholder
+		placeholder = self.Value == nil
+	end
+	self._valueLabel.Text = text
+	Theme.animate(self._valueLabel, { TextColor3 = placeholder and "TextMuted" or "Text" })
+end
+
+function Dropdown:_choose(option)
+	if self.Disabled then
+		return
+	end
+	if self.Multi then
+		local value = self:_copyValue()
+		local index = table.find(value, option)
+		if index then
+			table.remove(value, index)
+		else
+			table.insert(value, option)
+		end
+		self:Set(value)
+	else
+		if self.Value == option then
+			if self._allowNone then
+				self:Set(nil)
+			end
+		else
+			self:Set(option)
+		end
+		self:Close()
+	end
+end
+
+function Dropdown:_onClick()
+	if self.Expanded then
+		self:Close()
+	else
+		self:Open()
+	end
+end
+
+function Dropdown:_onExpanded(expanded)
+	Spring.animate(self._chevron, "Bouncy", { Rotation = expanded and 180 or 0 })
+	local stroke = self._box:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		Theme.animate(stroke, {
+			Color = expanded and "Accent" or "Stroke",
+			Transparency = expanded and 0.4 or "StrokeTransparency",
+		})
+	end
+end
+
+function Dropdown:Open()
+	if self.Disabled then
+		return self
+	end
+	self._searchBox.Visible = self:_searchEnabled()
+	self._searchInput.Text = ""
+	self._query = ""
+	self:_filter()
+	self:_setExpanded(true, self:_panelHeight())
+	return self
+end
+
+function Dropdown:Close()
+	self:_setExpanded(false, 0)
+	return self
+end
+
+-- dropdown:Set("Bow") · multi: dropdown:Set({ "A", "B" }) · dropdown:Set(nil) clears.
+function Dropdown:Set(value, silent, force)
+	local before = self.Multi and table.concat(self.Value, "\0") or self.Value
+	self:_apply(value)
+	local after = self.Multi and table.concat(self.Value, "\0") or self.Value
+	for _, option in ipairs(self._list) do
+		self:_paintOption(option)
+	end
+	self:_refreshDisplay()
+	if before == after and not force then
+		return self
+	end
+	self:_publish(self:_copyValue())
+	if not silent then
+		self.Changed:Fire(self:_copyValue())
+	end
+	return self
+end
+
+function Dropdown:Get()
+	return self:_copyValue()
+end
+
+-- Replaces the option list. The current selection is kept where possible.
+function Dropdown:SetOptions(list, keepSelection)
+	self._list = toList(list)
+	self.Values = self._list
+	local previous = self:_copyValue()
+	self:_buildOptions()
+	if keepSelection == false then
+		self:Set(self.Multi and {} or nil)
+	else
+		self:Set(previous)
+	end
+	return self
+end
+
+Dropdown.Refresh = Dropdown.SetOptions
+
+function Dropdown:Add(option)
+	option = tostring(option)
+	if not table.find(self._list, option) then
+		local list = table.clone(self._list)
+		table.insert(list, option)
+		self:SetOptions(list)
+	end
+	return self
+end
+
+function Dropdown:Remove(option)
+	local list = table.clone(self._list)
+	local index = table.find(list, tostring(option))
+	if index then
+		table.remove(list, index)
+		self:SetOptions(list)
+	end
+	return self
+end
+
+function Dropdown:Clear()
+	return self:Set(self.Multi and {} or nil)
+end
+
+function Dropdown:_serialize()
+	return self:_copyValue()
+end
+
+function Dropdown:_display()
+	if self.Multi then
+		return #self.Value == 0 and "None" or table.concat(self.Value, ", ")
+	end
+	return self.Value or "None"
+end
+
+-- Used by pinned widgets: moves a single-select dropdown to the next option.
+function Dropdown:Cycle(direction)
+	if self.Multi or #self._list == 0 then
+		return self
+	end
+	local index = table.find(self._list, self.Value) or 0
+	index = (index - 1 + (direction or 1)) % #self._list + 1
+	return self:Set(self._list[index])
+end
+
+Elements.register("Dropdown", Dropdown)
+
+return Dropdown
+end
+
+-- ======================================================================
+-- Elements/Input
+__modules["Elements/Input"] = function()
+-- Aether · Elements/Input
+--   Tab:Input({ Name = "Target", Placeholder = "Username", Callback = function(text) end })
+--   Numeric = true keeps only numbers · Live = true fires on every keystroke
+--   ClearOnFocus = true empties the box when clicked (Rayfield: RemoveTextAfterFocusLost)
+
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+
+local Input = Element.extend("Input")
+Input.Saveable = true
+
+function Input.new(section, options)
+	local self = setmetatable({}, Input)
+	self._numeric = options.Numeric == true
+	self._live = options.Live == true or options.Finished == false
+	self._maxLength = tonumber(options.MaxLength)
+	self._clearAfter = options.RemoveTextAfterFocusLost == true
+
+	local touch = section.Window.IsTouch
+	Element.init(self, section, options, {
+		ControlWidth = options.Width or (touch and 150 or 176),
+		ControlHeight = 30,
+	})
+
+	local box = Util.create("Frame", {
+		Name = "Box",
+		Size = UDim2.fromScale(1, 1),
+		ClipsDescendants = true,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = self.Control,
+	}, {
+		Util.corner(7),
+		Util.stroke(),
+	})
+	self._stroke = box:FindFirstChildOfClass("UIStroke")
+
+	local textBox = Util.create("TextBox", {
+		Name = "TextBox",
+		Position = UDim2.fromOffset(10, 0),
+		Size = UDim2.new(1, -20, 1, 0),
+		PlaceholderText = tostring(options.Placeholder or options.PlaceholderText or "Type here..."),
+		TextSize = 13,
+		ClearTextOnFocus = options.ClearOnFocus == true or options.ClearTextOnFocus == true,
+		Theme = { TextColor3 = "Text", PlaceholderColor3 = "TextMuted" },
+		Parent = box,
+	})
+	self.TextBox = textBox
+
+	local default = options.Default or options.Value or options.CurrentValue or options.Text or ""
+	self._default = tostring(default)
+	self._committed = self._default
+	textBox.Text = self._default
+	self:_publish(self._default)
+
+	self.Maid:Give(textBox.Focused:Connect(function()
+		if self._stroke then
+			Theme.animate(self._stroke, { Color = "Accent", Transparency = 0.3 })
+		end
+	end))
+
+	self.Maid:Give(textBox:GetPropertyChangedSignal("Text"):Connect(function()
+		local text = textBox.Text
+		local cleaned = text
+		if self._numeric then
+			cleaned = string.gsub(cleaned, "[^%d%.%-]", "")
+		end
+		if self._maxLength and #cleaned > self._maxLength then
+			cleaned = string.sub(cleaned, 1, self._maxLength)
+		end
+		if cleaned ~= text then
+			textBox.Text = cleaned
+			return
+		end
+		if self._live then
+			self:_commit(cleaned)
+		end
+	end))
+
+	self.Maid:Give(textBox.FocusLost:Connect(function(enterPressed)
+		if self._stroke then
+			Theme.animate(self._stroke, { Color = "Stroke", Transparency = "StrokeTransparency" })
+		end
+		self:_commit(textBox.Text, enterPressed)
+		if self._clearAfter then
+			textBox.Text = ""
+		end
+	end))
+
+	return self:_ready()
+end
+
+function Input:_commit(text, enterPressed)
+	if text == self._committed then
+		return
+	end
+	self._committed = text
+	self:_publish(text)
+	self.Changed:Fire(text, enterPressed == true)
+end
+
+function Input:Set(text, silent, force)
+	text = text == nil and "" or tostring(text)
+	if text == self._committed and not force then
+		return self
+	end
+	self._committed = text
+	self.TextBox.Text = text
+	self:_publish(text)
+	if not silent then
+		self.Changed:Fire(text, false)
+	end
+	return self
+end
+
+function Input:Get()
+	return self.Value
+end
+
+function Input:Focus()
+	self.TextBox:CaptureFocus()
+	return self
+end
+
+function Input:SetPlaceholder(text)
+	self.TextBox.PlaceholderText = tostring(text)
+	return self
+end
+
+function Input:_display()
+	return self.Value ~= "" and self.Value or "Empty"
+end
+
+Elements.register("Input", Input)
+
+return Input
+end
+
+-- ======================================================================
+-- Elements/Keybind
+__modules["Elements/Keybind"] = function()
+-- Aether · Elements/Keybind
+--   Tab:Keybind({ Name = "Dash", Default = "Q", Callback = function() end })
+-- Mode:
+--   "Press"  (default) the callback runs on every press
+--   "Toggle" each press flips an on/off state: callback(state)
+--   "Hold"   callback(true) on press, callback(false) on release
+-- OnBindChanged(key) runs when the user picks a different key.
+
+local Util = import("Core/Util")
+local Signal = import("Core/Signal")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+local KeyChip = import("Components/KeyChip")
+
+local Keybind = Element.extend("Keybind")
+Keybind.Saveable = true
+Keybind.Pinnable = true
+
+local MODES = { Press = true, Toggle = true, Hold = true }
+
+function Keybind.new(section, options)
+	local self = setmetatable({}, Keybind)
+	local mode = options.Mode
+	if options.HoldToInteract == true then
+		mode = "Hold"
+	end
+	self.Mode = MODES[mode] and mode or "Press"
+	self.State = false
+
+	Element.init(self, section, options, {
+		ControlWidth = 40,
+		ControlHeight = 26,
+		Hover = true,
+	})
+	self.BindChanged = Signal.new(("Keybind '%s' changed"):format(self.Name))
+
+	Util.create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Parent = self.Control,
+	})
+
+	self._chip = KeyChip.new({
+		Parent = self.Control,
+		Maid = self.Maid,
+		ShowWhenEmpty = true,
+		AllowMouse = options.AllowMouse ~= false,
+		OnResize = function(width)
+			self:_setControlWidth(math.max(width, 28))
+		end,
+		OnChanged = function(key)
+			self:_publish(key and key.Name or nil)
+			self.Key = key
+			self.BindChanged:Fire(key)
+		end,
+		OnTriggered = function(began)
+			self:_trigger(began)
+		end,
+	})
+
+	local default = options.Default or options.Key or options.CurrentKeybind or options.Value
+	self._chip:SetKey(default, true)
+	self.Key = self._chip.Key
+	self._default = self.Key and self.Key.Name or nil
+	self:_publish(self._default)
+
+	if type(options.ChangedCallback) == "function" then
+		self.BindChanged:Connect(options.ChangedCallback)
+	end
+	if type(options.OnBindChanged) == "function" then
+		self.BindChanged:Connect(options.OnBindChanged)
+	end
+
+	return self:_ready()
+end
+
+function Keybind:_publish(value)
+	Element._publish(self, value)
+	self.CurrentKeybind = value or "None" -- Rayfield's name for it
+end
+
+function Keybind:_trigger(began)
+	if self.Disabled then
+		return
+	end
+	if self.Mode == "Hold" then
+		self.State = began
+		self.Changed:Fire(began)
+	elseif began then
+		if self.Mode == "Toggle" then
+			self.State = not self.State
+			self.Changed:Fire(self.State)
+		else
+			self.Changed:Fire(true)
+		end
+	end
+end
+
+-- keybind:Set("E") / keybind:Set(Enum.KeyCode.E) / keybind:Set(nil)
+function Keybind:Set(key, silent, _force)
+	self._chip:SetKey(key, true)
+	self.Key = self._chip.Key
+	self:_publish(self.Key and self.Key.Name or nil)
+	if not silent then
+		self.BindChanged:Fire(self.Key)
+	end
+	return self
+end
+
+function Keybind:Get()
+	return self.Key
+end
+
+function Keybind:OnBindChanged(handler)
+	self.BindChanged:Connect(handler)
+	return self
+end
+
+-- Waits for the user to press a new key, as if they clicked the chip.
+function Keybind:Listen()
+	self._chip:Listen()
+	return self
+end
+
+function Keybind:_display()
+	return self.Key and Util.keyName(self.Key) or "None"
+end
+
+function Keybind:Destroy()
+	self.BindChanged:DisconnectAll()
+	Element.Destroy(self)
+end
+
+Elements.register("Keybind", Keybind)
+
+return Keybind
 end
 
 -- ======================================================================
@@ -3796,6 +6470,7 @@ local Element = import("Components/Element")
 local Elements = import("Components/Elements")
 
 local Label = Element.extend("Label")
+Label.Pinnable = true
 
 function Label.new(section, options)
 	local self = setmetatable({}, Label)
@@ -3830,6 +6505,7 @@ local Element = import("Components/Element")
 local Elements = import("Components/Elements")
 
 local Paragraph = Element.extend("Paragraph")
+Paragraph.Pinnable = true
 
 function Paragraph.new(section, options)
 	if options.Description == nil then
@@ -3869,6 +6545,3768 @@ return Paragraph
 end
 
 -- ======================================================================
+-- Elements/Slider
+__modules["Elements/Slider"] = function()
+-- Aether · Elements/Slider
+--   Tab:Slider({ Name = "WalkSpeed", Min = 16, Max = 200, Default = 16, Increment = 1, Suffix = " studs",
+--                Callback = function(value) end })
+-- Also accepts Rayfield's Range = { min, max } and CurrentValue, and Fluent's Rounding.
+
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Signal = import("Core/Signal")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+
+local Slider = Element.extend("Slider")
+Slider.Saveable = true
+Slider.Pinnable = true
+
+local VALUE_WIDTH = 72
+
+local function decimalsOf(increment)
+	local text = string.format("%.6f", increment):gsub("0+$", "")
+	local dot = string.find(text, ".", 1, true)
+	return dot and (#text - dot) or 0
+end
+
+function Slider.new(section, options)
+	local self = setmetatable({}, Slider)
+
+	local min, max = options.Min, options.Max
+	if type(options.Range) == "table" then
+		min = min or options.Range[1]
+		max = max or options.Range[2]
+	end
+	min = tonumber(min) or 0
+	max = tonumber(max) or 100
+	if max < min then
+		min, max = max, min
+	end
+
+	local increment = tonumber(options.Increment or options.Step)
+	if not increment and tonumber(options.Rounding) then
+		increment = 10 ^ -math.floor(tonumber(options.Rounding))
+	end
+	if not increment or increment <= 0 then
+		increment = 1
+	end
+
+	self.Min, self.Max, self.Increment = min, max, increment
+	self._decimals = decimalsOf(increment)
+
+	local suffix = options.Suffix and tostring(options.Suffix) or ""
+	-- "Bananas" reads better as "10 Bananas"; "%" and "s" stay attached.
+	if #suffix > 1 and string.match(suffix, "^%a") then
+		suffix = " " .. suffix
+	end
+	self._suffix = suffix
+
+	Element.init(self, section, options, {
+		Stacked = true,
+		Aside = VALUE_WIDTH,
+		ControlHeight = 18,
+		Hover = true,
+	})
+	self.Released = Signal.new(("Slider '%s' released"):format(self.Name))
+
+	-- Value box: shows the formatted value; click to type an exact number.
+	local box = Util.create("TextBox", {
+		Name = "Value",
+		Size = UDim2.fromScale(1, 1),
+		Text = "",
+		FontFace = Util.Fonts.Medium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		ClearTextOnFocus = false,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "Text",
+		},
+		Parent = self.Aside,
+	}, { Util.corner(6) })
+	self._box = box
+
+	local track = Util.create("TextButton", {
+		Name = "Track",
+		Size = UDim2.fromScale(1, 1),
+		Parent = self.Control,
+	})
+
+	local bar = Util.create("Frame", {
+		Name = "Bar",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.new(1, 0, 0, 6),
+		Theme = { BackgroundColor3 = "Control" },
+		Parent = track,
+	}, { Util.corner("full") })
+	self._bar = bar
+
+	self._fill = Util.create("Frame", {
+		Name = "Fill",
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Parent = bar,
+	}, {
+		Util.corner("full"),
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence } }),
+	})
+
+	self._glow = Util.create("Frame", {
+		Name = "Glow",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundTransparency = 1,
+		ZIndex = 2,
+		Theme = { BackgroundColor3 = "Accent" },
+		Parent = bar,
+	}, { Util.corner("full") })
+
+	self._knob = Util.create("Frame", {
+		Name = "Knob",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.fromOffset(14, 14),
+		ZIndex = 3,
+		Theme = { BackgroundColor3 = "Text" },
+		Parent = bar,
+	}, { Util.corner("full") })
+
+	local function setFromPointer(pointer)
+		local position, size = bar.AbsolutePosition, bar.AbsoluteSize
+		if size.X <= 0 then
+			return
+		end
+		local alpha = math.clamp((pointer.X - position.X) / size.X, 0, 1)
+		self:Set(min + (max - min) * alpha)
+	end
+
+	Util.draggable(track, {
+		Start = function(input)
+			if self.Disabled then
+				return false
+			end
+			self._dragging = true
+			self:_renderKnob()
+			setFromPointer(Util.pointer(input))
+			return true
+		end,
+		Move = function(_, pointer)
+			setFromPointer(pointer)
+		end,
+		End = function()
+			self._dragging = false
+			self:_renderKnob()
+			self.Released:Fire(self.Value)
+		end,
+	}, self.Maid)
+
+	self.Maid:Give(box.Focused:Connect(function()
+		box.Text = self:_format(self.Value, false)
+	end))
+	self.Maid:Give(box.FocusLost:Connect(function()
+		local number = tonumber((string.gsub(box.Text, "[^%d%.%-]", "")))
+		if number and not self.Disabled then
+			self:Set(number)
+		end
+		box.Text = self:_format(self.Value, true)
+	end))
+
+	local default = tonumber(options.Default or options.CurrentValue or options.Value) or min
+	self._default = self:_snap(default)
+	self:_publish(self._default)
+	self:_render(true)
+	return self:_ready()
+end
+
+-- Rounds to the increment, clamps to the range and strips float noise.
+function Slider:_snap(value)
+	local steps = math.floor((value - self.Min) / self.Increment + 0.5)
+	local snapped = math.clamp(self.Min + steps * self.Increment, self.Min, self.Max)
+	return tonumber(string.format("%." .. self._decimals .. "f", snapped))
+end
+
+function Slider:_format(value, withSuffix)
+	local text = string.format("%." .. self._decimals .. "f", value)
+	if withSuffix then
+		text ..= self._suffix
+	end
+	return text
+end
+
+function Slider:_alpha()
+	local span = self.Max - self.Min
+	return span > 0 and (self.Value - self.Min) / span or 0
+end
+
+function Slider:_render(instant)
+	local alpha = self:_alpha()
+	local fillGoal = { Size = UDim2.fromScale(alpha, 1) }
+	local knobGoal = { Position = UDim2.fromScale(alpha, 0.5) }
+	if instant then
+		Spring.stop(self._fill)
+		Spring.stop(self._knob, "Position")
+		Spring.stop(self._glow, "Position")
+		self._fill.Size = fillGoal.Size
+		self._knob.Position = knobGoal.Position
+		self._glow.Position = knobGoal.Position
+	else
+		local preset = self._dragging and "Quick" or "Snappy"
+		Spring.animate(self._fill, preset, fillGoal)
+		Spring.animate(self._knob, preset, knobGoal)
+		Spring.animate(self._glow, preset, knobGoal)
+	end
+	if not self._box:IsFocused() then
+		self._box.Text = self:_format(self.Value, true)
+	end
+end
+
+function Slider:_renderKnob()
+	local active = self._dragging or self._hovered
+	local size = self._dragging and 18 or (self._hovered and 16 or 14)
+	Spring.animate(self._knob, "Bouncy", { Size = UDim2.fromOffset(size, size) })
+	Spring.animate(self._glow, "Snappy", {
+		Size = UDim2.fromOffset(active and 26 or 14, active and 26 or 14),
+		BackgroundTransparency = active and 0.8 or 1,
+	})
+end
+
+function Slider:_onHover()
+	self:_renderKnob()
+end
+
+function Slider:Set(value, silent, force)
+	value = tonumber(value)
+	if not value then
+		return self
+	end
+	value = self:_snap(value)
+	if value == self.Value and not force then
+		return self
+	end
+	self:_publish(value)
+	self:_render(false)
+	if not silent then
+		self.Changed:Fire(value)
+	end
+	return self
+end
+
+function Slider:Get()
+	return self.Value
+end
+
+-- Changes the range, keeping the value inside it.
+function Slider:SetRange(min, max)
+	self.Min, self.Max = tonumber(min) or self.Min, tonumber(max) or self.Max
+	self:Set(self.Value, true, true)
+	return self
+end
+
+-- Runs a handler when the user lets go of the slider (good for expensive work).
+function Slider:OnRelease(handler)
+	self.Released:Connect(handler)
+	return self
+end
+
+function Slider:_display()
+	return self:_format(self.Value, true)
+end
+
+function Slider:_onDisabled(disabled)
+	Spring.animate(self._knob, "Snappy", { BackgroundTransparency = disabled and 0.5 or 0 })
+	Spring.animate(self._fill, "Snappy", { BackgroundTransparency = disabled and 0.5 or 0 })
+end
+
+function Slider:Destroy()
+	self.Released:DisconnectAll()
+	Element.Destroy(self)
+end
+
+Elements.register("Slider", Slider)
+
+return Slider
+end
+
+-- ======================================================================
+-- Elements/Toggle
+__modules["Elements/Toggle"] = function()
+-- Aether · Elements/Toggle
+--   Tab:Toggle({ Name = "Fly", Default = false, Keybind = "F", Callback = function(on) end })
+--   Tab:Toggle("Fly"):Keybind("F"):OnChanged(function(on) end)
+
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Element = import("Components/Element")
+local Elements = import("Components/Elements")
+local KeyChip = import("Components/KeyChip")
+
+local Toggle = Element.extend("Toggle")
+Toggle.Saveable = true
+Toggle.Pinnable = true
+Toggle.Bindable = true
+
+local TRACK_WIDTH, TRACK_HEIGHT = 40, 22
+local KNOB, KNOB_PRESSED, INSET = 16, 21, 3
+
+function Toggle.new(section, options)
+	local self = setmetatable({}, Toggle)
+	local default = options.Default
+	if default == nil then
+		default = options.CurrentValue
+	end
+	if default == nil then
+		default = options.Value
+	end
+	default = default == true
+
+	Element.init(self, section, options, {
+		Clickable = true,
+		ControlWidth = TRACK_WIDTH,
+		ControlHeight = 26,
+	})
+	self._default = default
+	self._pressed = false
+
+	Util.create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 8),
+		Parent = self.Control,
+	})
+
+	local track = Util.create("Frame", {
+		Name = "Track",
+		Size = UDim2.fromOffset(TRACK_WIDTH, TRACK_HEIGHT),
+		LayoutOrder = 2,
+		Theme = { BackgroundColor3 = "Control" },
+		Parent = self.Control,
+	}, {
+		Util.corner("full"),
+		Util.stroke(),
+	})
+
+	self._fill = Util.create("Frame", {
+		Name = "Fill",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 1,
+		Parent = track,
+	}, {
+		Util.corner("full"),
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence } }),
+	})
+
+	self._knob = Util.create("Frame", {
+		Name = "Knob",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, INSET, 0.5, 0),
+		Size = UDim2.fromOffset(KNOB, KNOB),
+		ZIndex = 2,
+		Theme = { BackgroundColor3 = "TextDim" },
+		Parent = track,
+	}, { Util.corner("full") })
+
+	-- Knob squish while the pointer is held down, like iOS switches.
+	self.Maid:Give(self.Hitbox.InputBegan:Connect(function(input)
+		if Util.isPress(input) and not self.Disabled then
+			self._pressed = true
+			self:_render(false)
+		end
+	end))
+	self.Maid:Give(self.Hitbox.InputEnded:Connect(function(input)
+		if Util.isPress(input) and self._pressed then
+			self._pressed = false
+			self:_render(false)
+		end
+	end))
+
+	if options.Keybind then
+		self:Keybind(options.Keybind)
+	end
+
+	self:_publish(default)
+	self:_render(true)
+	return self:_ready()
+end
+
+function Toggle:_render(instant)
+	local on = self.Value == true
+	local width = self._pressed and KNOB_PRESSED or KNOB
+	local x = on and (TRACK_WIDTH - width - INSET) or INSET
+	local knobGoal = { Position = UDim2.new(0, x, 0.5, 0), Size = UDim2.fromOffset(width, KNOB) }
+	local fillGoal = { BackgroundTransparency = on and 0 or 1 }
+	local knobColor = on and "OnAccent" or "TextDim"
+
+	if instant then
+		Spring.stop(self._knob)
+		Spring.stop(self._fill)
+		self._knob.Position = knobGoal.Position
+		self._knob.Size = knobGoal.Size
+		self._fill.BackgroundTransparency = fillGoal.BackgroundTransparency
+		Theme.bind(self._knob, { BackgroundColor3 = knobColor })
+	else
+		Spring.animate(self._knob, "Bouncy", knobGoal)
+		Spring.animate(self._fill, "Snappy", fillGoal)
+		Theme.animate(self._knob, { BackgroundColor3 = knobColor })
+	end
+end
+
+-- toggle:Set(true)  ·  toggle:Set(true, true) sets it without running callbacks.
+function Toggle:Set(value, silent, force)
+	value = value == true
+	if value == self.Value and not force then
+		return self
+	end
+	self:_publish(value)
+	self:_render(false)
+	if not silent then
+		self.Changed:Fire(value)
+	end
+	return self
+end
+
+function Toggle:Toggle()
+	return self:Set(not self.Value)
+end
+
+function Toggle:Get()
+	return self.Value
+end
+
+function Toggle:_onClick()
+	self:Toggle()
+end
+
+function Toggle:_display()
+	return self.Value and "On" or "Off"
+end
+
+-- Binds a key that flips the toggle: toggle:Keybind("F")
+function Toggle:Keybind(key)
+	if not self._chip then
+		self._chip = KeyChip.new({
+			Parent = self.Control,
+			LayoutOrder = 1,
+			Maid = self.Maid,
+			OnResize = function(width)
+				self:_setControlWidth(TRACK_WIDTH + (width > 0 and width + 8 or 0))
+			end,
+			OnTriggered = function(began)
+				if began and not self.Disabled then
+					self:Toggle()
+				end
+			end,
+		})
+	end
+	self._chip:SetKey(key)
+	return self
+end
+
+function Toggle:GetKeybind()
+	return self._chip and self._chip.Key or nil
+end
+
+function Toggle:_onDisabled(disabled)
+	Spring.animate(self._knob, "Snappy", { BackgroundTransparency = disabled and 0.5 or 0 })
+end
+
+Elements.register("Toggle", Toggle)
+
+return Toggle
+end
+
+-- ======================================================================
+-- Features/Compat
+__modules["Features/Compat"] = function()
+-- Aether · Features/Compat
+-- Makes scripts written for Rayfield run on Aether after changing the
+-- loadstring line. Window options are translated here; element option names
+-- (CurrentValue, Range, CurrentOption, MultipleOptions, CurrentKeybind,
+-- HoldToInteract, PlaceholderText, RemoveTextAfterFocusLost...) are accepted
+-- by the elements themselves, and the Create* methods keep Rayfield's
+-- callback shapes (a single-select dropdown passes a table).
+--
+-- Not supported: GrabKeyFromSite (Aether never downloads anything on its own;
+-- use Check = function(key) ... end with Aether:KeySystem instead).
+
+local Log = import("Core/Log")
+
+local Compat = {}
+
+local RAYFIELD_THEMES = {
+	default = "Aether",
+	dark = "Aether",
+	amberglow = "Rose",
+	amethyst = "Midnight",
+	bloom = "Rose",
+	darkblue = "Midnight",
+	green = "Emerald",
+	light = "Light",
+	ocean = "Ocean",
+	serenity = "Ocean",
+}
+
+-- Maps a theme name from another library to an Aether theme (or returns it unchanged).
+function Compat.themeName(name)
+	if type(name) ~= "string" then
+		return name
+	end
+	return RAYFIELD_THEMES[string.lower(name)] or name
+end
+
+-- Translates Rayfield window options into Aether ones, in place.
+function Compat.windowOptions(options)
+	if options.ToggleKey == nil and options.ToggleUIKeybind ~= nil then
+		options.ToggleKey = options.ToggleUIKeybind
+	end
+	if options.Icon == 0 or options.Icon == "0" then
+		options.Icon = nil
+	end
+	if type(options.Theme) == "string" then
+		options.Theme = Compat.themeName(options.Theme)
+	end
+
+	local saving = options.ConfigurationSaving
+	if type(saving) == "table" and saving.Enabled and options.AutoSave == nil then
+		options.AutoSave = type(saving.FileName) == "string" and saving.FileName or "config"
+		if type(saving.FolderName) == "string" and saving.FolderName ~= "" and options.ConfigFolder == nil then
+			options.ConfigFolder = saving.FolderName
+		end
+		-- Rayfield scripts restore values by calling :LoadConfiguration() at the end.
+		options.__deferAutoSave = true
+	end
+	return options
+end
+
+-- Rayfield's KeySettings -> Aether:KeySystem options (nil when no key system).
+function Compat.keySystem(options)
+	if options.KeySystem ~= true or type(options.KeySettings) ~= "table" then
+		return nil
+	end
+	local settings = options.KeySettings
+	if settings.GrabKeyFromSite then
+		Log.warn("GrabKeyFromSite isn't supported: Aether never downloads anything on its own. Put the keys in Key, or use Aether:KeySystem with a Check function.")
+	end
+	local keys = settings.Key
+	if type(keys) == "string" then
+		keys = { keys }
+	end
+	return {
+		Title = settings.Title or options.Name,
+		Subtitle = settings.Subtitle,
+		Note = settings.Note,
+		Keys = type(keys) == "table" and keys or {},
+		SaveKey = settings.SaveKey ~= false,
+	}
+end
+
+-- Notification actions may be a Rayfield-style dictionary: { Ignore = { Name = ..., Callback = ... } }
+function Compat.actionList(actions)
+	if type(actions) ~= "table" then
+		return nil
+	end
+	if #actions > 0 then
+		return actions
+	end
+	local list = {}
+	for _, action in pairs(actions) do
+		if type(action) == "table" then
+			table.insert(list, action)
+		end
+	end
+	return #list > 0 and list or nil
+end
+
+return Compat
+end
+
+-- ======================================================================
+-- Features/Config
+__modules["Features/Config"] = function()
+-- Aether · Features/Config
+-- Saves and loads element values, share codes, and interface preferences.
+--
+-- Every element with a value is saved automatically, keyed by its Flag, or
+-- by "Tab/Section/Name" when it has none. Opt out with Save = false.
+-- Values for elements that don't exist yet are kept and applied the moment
+-- the element is created, so loading never depends on timing.
+--
+-- Files (executor workspace):
+--   Aether/<Window>/configs/<name>.json
+--   Aether/<Window>/autoload.txt
+--   Aether/<Window>/interface.json    theme, toggle key, pinned widgets...
+
+local Env = import("Core/Env")
+local Log = import("Core/Log")
+local Base64 = import("Core/Base64")
+
+local HttpService = Env.service("HttpService")
+
+local Config = {}
+Config.__index = Config
+
+local CONFIG_PREFIX = "AE1:"
+
+local function sanitize(name)
+	name = string.gsub(tostring(name or ""), "[^%w%-_ %.%(%)]", "")
+	name = string.gsub(name, "^%s+", "")
+	name = string.gsub(name, "%s+$", "")
+	return name
+end
+
+Config.sanitize = sanitize
+
+local function encode(data)
+	local ok, text = pcall(function()
+		return HttpService:JSONEncode(data)
+	end)
+	return ok and text or nil
+end
+
+local function decode(text)
+	if type(text) ~= "string" then
+		return nil
+	end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(text)
+	end)
+	return ok and type(data) == "table" and data or nil
+end
+
+Config.encode = encode
+Config.decode = decode
+
+function Config.new(window)
+	local options = window.Options
+	local folder = options.ConfigFolder
+	if type(folder) ~= "string" or folder == "" then
+		folder = "Aether/" .. (sanitize(window.Name) ~= "" and sanitize(window.Name) or "Window")
+	end
+	if options.PerGame then
+		folder ..= "/" .. tostring(game.PlaceId)
+	end
+	return setmetatable({
+		Window = window,
+		Folder = folder,
+		_pending = {},
+	}, Config)
+end
+
+function Config:_path(name)
+	return self.Folder .. "/configs/" .. name .. ".json"
+end
+
+local function saveable(element)
+	return element.Saveable and element._save and not element.Destroyed
+end
+
+-- id -> JSON-safe value for every saveable element.
+function Config:Collect()
+	local values = {}
+	for _, element in ipairs(self.Window.Elements) do
+		if saveable(element) then
+			local ok, value = pcall(element._serialize, element)
+			if ok and value ~= nil then
+				values[element:GetId()] = value
+			end
+		end
+	end
+	for id, value in pairs(self._pending) do
+		if values[id] == nil then
+			values[id] = value
+		end
+	end
+	return values
+end
+
+-- Applies values; ones for elements that don't exist yet wait for them.
+function Config:Apply(values)
+	local byId = {}
+	for _, element in ipairs(self.Window.Elements) do
+		if saveable(element) then
+			byId[element:GetId()] = element
+		end
+	end
+	local applied = 0
+	for id, value in pairs(values) do
+		local element = byId[id]
+		if element then
+			local ok, err = pcall(element._deserialize, element, value)
+			if ok then
+				applied += 1
+			else
+				Log.warn(("Couldn't load a value for '%s': %s"):format(id, tostring(err)))
+			end
+		else
+			self._pending[id] = value
+		end
+	end
+	return applied
+end
+
+-- Called when an element finishes building. Deferred so the script that
+-- creates the element has finished its line before callbacks run.
+function Config:_elementReady(element)
+	local id = element:GetId()
+	local value = self._pending[id]
+	if value == nil or not saveable(element) then
+		return
+	end
+	self._pending[id] = nil
+	task.defer(function()
+		if not element.Destroyed then
+			local ok, err = pcall(element._deserialize, element, value)
+			if not ok then
+				Log.warn(("Couldn't load a value for '%s': %s"):format(id, tostring(err)))
+			end
+		end
+	end)
+end
+
+---------------------------------------------------------------------------
+-- Named configs
+---------------------------------------------------------------------------
+
+function Config:Save(name)
+	name = sanitize(name)
+	if name == "" then
+		return false, "Enter a name for the config"
+	end
+	local text = encode({ Aether = 1, Values = self:Collect() })
+	if not text then
+		return false, "Couldn't encode the config"
+	end
+	if not Env.writeFile(self:_path(name), text) then
+		return false, "Couldn't write the config file"
+	end
+	return true
+end
+
+function Config:Load(name)
+	name = sanitize(name)
+	if name == "" then
+		return false, "Pick a config to load"
+	end
+	local data = decode(Env.readFile(self:_path(name)))
+	if not data then
+		return false, ("Config '%s' wasn't found"):format(name)
+	end
+	if type(data.Values) ~= "table" then
+		return false, ("Config '%s' is damaged"):format(name)
+	end
+	return true, self:Apply(data.Values)
+end
+
+function Config:Delete(name)
+	name = sanitize(name)
+	if name == "" then
+		return false, "Pick a config to delete"
+	end
+	if self:GetAutoload() == name then
+		self:SetAutoload(nil)
+	end
+	return Env.deleteFile(self:_path(name))
+end
+
+function Config:List()
+	local names = {}
+	for _, file in ipairs(Env.listFiles(self.Folder .. "/configs")) do
+		local name = string.match(file, "^(.*)%.json$")
+		if name then
+			table.insert(names, name)
+		end
+	end
+	return names
+end
+
+function Config:SetAutoload(name)
+	name = name and sanitize(name) or ""
+	Env.writeFile(self.Folder .. "/autoload.txt", name)
+	return true
+end
+
+function Config:GetAutoload()
+	local name = Env.readFile(self.Folder .. "/autoload.txt")
+	if type(name) == "string" and name ~= "" then
+		return name
+	end
+	return nil
+end
+
+function Config:LoadAutoload()
+	local name = self:GetAutoload()
+	if not name then
+		return false
+	end
+	return self:Load(name)
+end
+
+---------------------------------------------------------------------------
+-- Share codes
+---------------------------------------------------------------------------
+
+function Config:Export()
+	return CONFIG_PREFIX .. Base64.encode(encode({ V = self:Collect() }) or "{}")
+end
+
+function Config:Import(code)
+	code = string.gsub(tostring(code or ""), "%s", "")
+	if string.sub(code, 1, #CONFIG_PREFIX) ~= CONFIG_PREFIX then
+		return false, "That isn't an Aether config code"
+	end
+	local json = Base64.decode(string.sub(code, #CONFIG_PREFIX + 1))
+	local data = json and decode(json)
+	if not data or type(data.V) ~= "table" then
+		return false, "The code is incomplete or damaged"
+	end
+	return true, self:Apply(data.V)
+end
+
+---------------------------------------------------------------------------
+-- Interface preferences (saved automatically)
+---------------------------------------------------------------------------
+
+function Config:SavePrefs(prefs)
+	local text = encode(prefs)
+	if text then
+		Env.writeFile(self.Folder .. "/interface.json", text)
+	end
+end
+
+function Config:LoadPrefs()
+	return decode(Env.readFile(self.Folder .. "/interface.json"))
+end
+
+return Config
+end
+
+-- ======================================================================
+-- Features/ContextMenu
+__modules["Features/ContextMenu"] = function()
+-- Aether · Features/ContextMenu
+-- Right-click (or long-press) menu. Items:
+--   { Text = "Pin to screen", Icon = "pin", Callback = fn, Danger = false }
+--   { Separator = true }
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Maid = import("Core/Maid")
+local Log = import("Core/Log")
+local Overlay = import("Features/Overlay")
+
+local UserInputService = Env.service("UserInputService")
+
+local ContextMenu = {}
+
+local WIDTH = 204
+local ITEM_HEIGHT = 30
+local ITEM_GAP = 2
+local SEPARATOR_HEIGHT = 9
+
+local current = nil
+
+function ContextMenu.close()
+	if not current then
+		return
+	end
+	local menu = current
+	current = nil
+	Spring.animate(menu.Frame, "Quick", { GroupTransparency = 1 }, function()
+		menu.Maid:Clean()
+	end)
+	menu.Backdrop:Destroy()
+end
+
+function ContextMenu.isOpen()
+	return current ~= nil
+end
+
+function ContextMenu.open(items, pointer)
+	ContextMenu.close()
+	if #items == 0 then
+		return
+	end
+
+	local maid = Maid.new()
+	local layer = Overlay.layer("Menu")
+
+	local backdrop = Util.create("TextButton", {
+		Name = "MenuBackdrop",
+		Size = UDim2.fromScale(1, 1),
+		Parent = layer,
+	})
+	maid:Give(backdrop)
+	backdrop.InputBegan:Connect(function(input)
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseButton1 or kind == Enum.UserInputType.MouseButton2 or kind == Enum.UserInputType.Touch then
+			ContextMenu.close()
+		end
+	end)
+
+	-- Height is known up front, so the menu can be flipped to stay on screen.
+	local height = 10
+	for index, item in ipairs(items) do
+		height += item.Separator and SEPARATOR_HEIGHT or ITEM_HEIGHT
+		if index > 1 then
+			height += ITEM_GAP
+		end
+	end
+
+	local screen = Overlay.size()
+	local x = math.clamp(pointer.X, 8, math.max(8, screen.X - WIDTH - 8))
+	local y = pointer.Y + 4
+	if y + height > screen.Y - 8 then
+		y = math.max(8, pointer.Y - height - 4)
+	end
+
+	local frame = Util.create("CanvasGroup", {
+		Name = "ContextMenu",
+		Position = UDim2.fromOffset(x, y),
+		Size = UDim2.fromOffset(WIDTH, height),
+		GroupTransparency = 1,
+		ZIndex = 2,
+		Parent = layer,
+	}, {
+		Util.corner(10),
+		Util.padding(1),
+	})
+	maid:Give(frame)
+
+	local card = Util.create("Frame", {
+		Name = "Card",
+		Size = UDim2.fromScale(1, 1),
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = frame,
+	}, {
+		Util.corner(9),
+		Util.stroke(),
+		Util.padding(4),
+		Util.list(ITEM_GAP),
+	})
+
+	for index, item in ipairs(items) do
+		if item.Separator then
+			local separator = Util.create("Frame", {
+				Name = "Separator",
+				Size = UDim2.new(1, 0, 0, SEPARATOR_HEIGHT),
+				BackgroundTransparency = 1,
+				LayoutOrder = index,
+				Parent = card,
+			})
+			Util.create("Frame", {
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, 6, 0.5, 0),
+				Size = UDim2.new(1, -12, 0, 1),
+				Theme = {
+					BackgroundColor3 = "Divider",
+					BackgroundTransparency = "DividerTransparency",
+				},
+				Parent = separator,
+			})
+		else
+			local color = item.Danger and "Danger" or "Text"
+			local button = Util.create("TextButton", {
+				Name = tostring(item.Text),
+				Size = UDim2.new(1, 0, 0, ITEM_HEIGHT),
+				LayoutOrder = index,
+				BackgroundTransparency = 1,
+				Theme = { BackgroundColor3 = "ElementHover" },
+				Parent = card,
+			}, { Util.corner(6) })
+
+			if item.Icon then
+				local icon = Util.icon(item.Icon, 14, item.Danger and "Danger" or "TextDim")
+				icon.AnchorPoint = Vector2.new(0, 0.5)
+				icon.Position = UDim2.new(0, 9, 0.5, 0)
+				icon.Parent = button
+			end
+
+			Util.create("TextLabel", {
+				Name = "Label",
+				Position = UDim2.fromOffset(item.Icon and 31 or 10, 0),
+				Size = UDim2.new(1, -40, 1, 0),
+				Text = tostring(item.Text),
+				TextSize = 13,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Theme = { TextColor3 = color },
+				Parent = button,
+			})
+
+			if item.Hint then
+				Util.create("TextLabel", {
+					Name = "Hint",
+					AnchorPoint = Vector2.new(1, 0),
+					Position = UDim2.new(1, -9, 0, 0),
+					Size = UDim2.new(0, 60, 1, 0),
+					Text = tostring(item.Hint),
+					TextSize = 11,
+					TextXAlignment = Enum.TextXAlignment.Right,
+					Theme = { TextColor3 = "TextMuted" },
+					Parent = button,
+				})
+			end
+
+			button.MouseEnter:Connect(function()
+				Theme.animate(button, { BackgroundTransparency = "HoverTransparency" }, "Quick")
+			end)
+			button.MouseLeave:Connect(function()
+				Theme.animate(button, { BackgroundTransparency = 1 }, "Quick")
+			end)
+			button.Activated:Connect(function()
+				ContextMenu.close()
+				if type(item.Callback) == "function" then
+					task.spawn(function()
+						local ok, err = pcall(item.Callback)
+						if not ok then
+							Log.error("Menu action failed: " .. tostring(err))
+						end
+					end)
+				end
+			end)
+		end
+	end
+
+	local scale = Util.create("UIScale", { Scale = 0.94, Parent = frame })
+	Spring.animate(scale, "Bouncy", { Scale = 1 })
+	Spring.animate(frame, "Quick", { GroupTransparency = 0 })
+
+	maid:Give(UserInputService.InputBegan:Connect(function(input)
+		if input.KeyCode == Enum.KeyCode.Escape then
+			ContextMenu.close()
+		end
+	end))
+
+	current = { Frame = frame, Backdrop = backdrop, Maid = maid }
+end
+
+return ContextMenu
+end
+
+-- ======================================================================
+-- Features/Dialog
+__modules["Features/Dialog"] = function()
+-- Aether · Features/Dialog
+--   Window:Dialog({
+--       Title = "Unload?",
+--       Content = "This removes the interface.",
+--       Buttons = {
+--           { Name = "Cancel" },
+--           { Name = "Unload", Danger = true, Callback = function() ... end },
+--       },
+--   })
+-- A button with Primary = true gets the accent style. Clicking the dimmed
+-- background cancels unless Dismissible = false.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Maid = import("Core/Maid")
+local Log = import("Core/Log")
+
+local UserInputService = Env.service("UserInputService")
+
+local Dialog = {}
+
+local function styleButton(button, spec)
+	if spec.Primary then
+		button.BackgroundColor3 = Color3.new(1, 1, 1)
+		button.BackgroundTransparency = 0
+		Theme.bind(button, { TextColor3 = "OnAccent" })
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence }, Parent = button })
+	elseif spec.Danger then
+		button.BackgroundTransparency = 0
+		Theme.bind(button, { BackgroundColor3 = "Danger" })
+		button.TextColor3 = Color3.new(1, 1, 1)
+	else
+		Theme.bind(button, {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "Text",
+		})
+		Util.stroke().Parent = button
+	end
+end
+
+function Dialog.open(window, options)
+	options = options or {}
+	local root = window._root
+	local maid = Maid.new()
+	local closed = false
+	local dialog = {}
+
+	local shade = Util.create("TextButton", {
+		Name = "DialogShade",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ZIndex = 50,
+		Theme = { BackgroundColor3 = "Shadow" },
+		Parent = root,
+	}, { Util.corner(12) })
+	maid:Give(shade)
+
+	local frame = Util.create("CanvasGroup", {
+		Name = "Dialog",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(math.min(340, window._size.X - 40), 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		GroupTransparency = 1,
+		ZIndex = 51,
+		Parent = root,
+	}, {
+		Util.corner(12),
+		Util.padding(1),
+	})
+	maid:Give(frame)
+	local scale = Util.create("UIScale", { Scale = 0.94, Parent = frame })
+
+	local card = Util.create("Frame", {
+		Name = "Card",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = frame,
+	}, {
+		Util.corner(11),
+		Util.stroke(),
+		Util.padding(18),
+		Util.list(8),
+	})
+
+	Util.create("TextLabel", {
+		Name = "Title",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Text = tostring(options.Title or "Are you sure?"),
+		FontFace = Util.Fonts.Bold,
+		TextSize = 16,
+		TextWrapped = true,
+		LayoutOrder = 1,
+		Theme = { TextColor3 = "Text" },
+		Parent = card,
+	})
+
+	local content = options.Content or options.Description or options.Text
+	if content then
+		Util.create("TextLabel", {
+			Name = "Content",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = tostring(content),
+			TextSize = 13,
+			TextWrapped = true,
+			LayoutOrder = 2,
+			Theme = { TextColor3 = "TextDim" },
+			Parent = card,
+		})
+	end
+
+	local row = Util.create("Frame", {
+		Name = "Buttons",
+		Size = UDim2.new(1, 0, 0, 44),
+		BackgroundTransparency = 1,
+		LayoutOrder = 3,
+		Parent = card,
+	}, {
+		Util.list(8, Enum.FillDirection.Horizontal, Enum.VerticalAlignment.Bottom, Enum.HorizontalAlignment.Right),
+	})
+
+	local function close()
+		if closed then
+			return
+		end
+		closed = true
+		dialog.Open = false
+		Spring.animate(shade, "Snappy", { BackgroundTransparency = 1 })
+		Spring.animate(scale, "Snappy", { Scale = 0.96 })
+		Spring.animate(frame, "Snappy", { GroupTransparency = 1 }, function()
+			maid:Clean()
+		end)
+	end
+
+	local buttons = options.Buttons or {
+		{ Name = "Cancel" },
+		{ Name = "OK", Primary = true, Callback = options.Callback },
+	}
+	for index, spec in ipairs(buttons) do
+		local button = Util.create("TextButton", {
+			Name = tostring(spec.Name or spec.Title),
+			Size = UDim2.fromOffset(0, 32),
+			AutomaticSize = Enum.AutomaticSize.X,
+			Text = tostring(spec.Name or spec.Title or "OK"),
+			FontFace = Util.Fonts.SemiBold,
+			TextSize = 13,
+			LayoutOrder = index,
+			Parent = row,
+		}, {
+			Util.corner(8),
+			Util.padding(0, 16, 0, 16),
+		})
+		styleButton(button, spec)
+		maid:Give(button.Activated:Connect(function()
+			close()
+			if type(spec.Callback) == "function" then
+				task.spawn(function()
+					local ok, err = pcall(spec.Callback)
+					if not ok then
+						Log.error("Dialog button failed: " .. tostring(err))
+					end
+				end)
+			end
+		end))
+	end
+
+	if options.Dismissible ~= false then
+		maid:Give(shade.Activated:Connect(close))
+		maid:Give(UserInputService.InputBegan:Connect(function(input)
+			if input.KeyCode == Enum.KeyCode.Escape then
+				close()
+			end
+		end))
+	end
+
+	Spring.animate(shade, "Snappy", { BackgroundTransparency = 0.45 })
+	Spring.animate(scale, "Bouncy", { Scale = 1 })
+	Spring.animate(frame, "Snappy", { GroupTransparency = 0 })
+
+	dialog.Open = true
+	dialog.Close = close
+	return dialog
+end
+
+return Dialog
+end
+
+-- ======================================================================
+-- Features/KeySystem
+__modules["Features/KeySystem"] = function()
+-- Aether · Features/KeySystem (optional)
+--
+--   local unlocked = Aether:KeySystem({
+--       Title = "My Hub",
+--       Note = "Join the Discord to get a key.",
+--       Link = "https://example.com/key",   -- "Get key" copies this
+--       Keys = { "AETHER-1234" },           -- or: Check = function(key) return ... end
+--       SaveKey = true,                     -- remember a valid key on this device
+--   })
+--   if not unlocked then return end
+--
+-- Aether never contacts any server itself: keys are checked against Keys, or
+-- by your own Check function. Yields until a valid key is entered (true) or
+-- the prompt is closed (false).
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Maid = import("Core/Maid")
+local Log = import("Core/Log")
+local Overlay = import("Features/Overlay")
+local Config = import("Features/Config")
+local Notifications = import("Features/Notifications")
+
+local KeySystem = {}
+
+local function trim(text)
+	return (string.gsub(tostring(text or ""), "^%s*(.-)%s*$", "%1"))
+end
+
+local function makeChecker(options)
+	if type(options.Check) == "function" then
+		return function(key)
+			local ok, result = pcall(options.Check, key)
+			if not ok then
+				Log.error("Key check failed: " .. tostring(result))
+				return false
+			end
+			return result == true
+		end
+	end
+	local valid = {}
+	if type(options.Keys) == "table" then
+		for _, key in ipairs(options.Keys) do
+			valid[trim(key)] = true
+		end
+	elseif type(options.Key) == "string" then
+		valid[trim(options.Key)] = true
+	end
+	return function(key)
+		return valid[key] == true
+	end
+end
+
+function KeySystem.prompt(library, options)
+	options = options or {}
+	local title = tostring(options.Title or options.Name or "Key required")
+	local check = makeChecker(options)
+	local savePath = "Aether/Keys/" .. (Config.sanitize(title) ~= "" and Config.sanitize(title) or "key") .. ".txt"
+
+	-- A saved key that still passes skips the prompt entirely.
+	if options.SaveKey ~= false then
+		local saved = Env.readFile(savePath)
+		if saved and saved ~= "" and check(trim(saved)) then
+			return true
+		end
+	end
+
+	local maid = Maid.new()
+	local layer = Overlay.layer("Palette")
+	local thread = coroutine.running()
+	local finished = false
+	local waiting = false
+
+	local backdrop = Util.create("TextButton", {
+		Name = "KeyBackdrop",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 1,
+		Parent = layer,
+	})
+	maid:Give(backdrop)
+
+	local width = math.min(380, Overlay.size().X - 32)
+	local frame = Util.create("CanvasGroup", {
+		Name = "KeySystem",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(width, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		GroupTransparency = 1,
+		ZIndex = 2,
+		Parent = layer,
+	}, {
+		Util.corner(14),
+		Util.padding(1),
+	})
+	maid:Give(frame)
+	local scale = Util.create("UIScale", { Scale = 0.94, Parent = frame })
+
+	local card = Util.create("Frame", {
+		Name = "Card",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = frame,
+	}, {
+		Util.corner(13),
+		Util.padding(20),
+		Util.list(12),
+	})
+	local cardStroke = Util.stroke()
+	cardStroke.Parent = card
+
+	-- Header
+	local header = Util.create("Frame", {
+		Name = "Header",
+		Size = UDim2.new(1, 0, 0, 38),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+		Parent = card,
+	})
+	local logo = Util.create("Frame", {
+		Name = "Logo",
+		Size = UDim2.fromOffset(38, 38),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Parent = header,
+	}, {
+		Util.corner(11),
+		Util.create("UIGradient", { Rotation = 45, Theme = { Color = Theme.accentSequence } }),
+	})
+	local lock = Util.icon("lock", 18, "OnAccent")
+	lock.AnchorPoint = Vector2.new(0.5, 0.5)
+	lock.Position = UDim2.fromScale(0.5, 0.5)
+	lock.Parent = logo
+
+	Util.create("TextLabel", {
+		Name = "Title",
+		Position = UDim2.fromOffset(50, 1),
+		Size = UDim2.new(1, -80, 0, 20),
+		Text = title,
+		FontFace = Util.Fonts.Bold,
+		TextSize = 16,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "Text" },
+		Parent = header,
+	})
+	Util.create("TextLabel", {
+		Name = "Subtitle",
+		Position = UDim2.fromOffset(50, 21),
+		Size = UDim2.new(1, -80, 0, 16),
+		Text = tostring(options.Subtitle or "Enter your key to continue"),
+		TextSize = 12,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "TextDim" },
+		Parent = header,
+	})
+
+	local close = Util.create("TextButton", {
+		Name = "Close",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		Size = UDim2.fromOffset(24, 24),
+		Parent = header,
+	})
+	local closeGlyph = Util.glyph("close", { Size = 11, Color = "TextMuted", Thickness = 1.5 })
+	closeGlyph.AnchorPoint = Vector2.new(0.5, 0.5)
+	closeGlyph.Position = UDim2.fromScale(0.5, 0.5)
+	closeGlyph.Parent = close
+
+	if options.Note then
+		Util.create("TextLabel", {
+			Name = "Note",
+			Size = UDim2.fromScale(1, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Text = tostring(options.Note),
+			TextSize = 13,
+			TextWrapped = true,
+			LayoutOrder = 2,
+			Theme = { TextColor3 = "TextDim" },
+			Parent = card,
+		})
+	end
+
+	-- Key field
+	local field = Util.create("Frame", {
+		Name = "Field",
+		Size = UDim2.new(1, 0, 0, 38),
+		LayoutOrder = 3,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = card,
+	}, { Util.corner(8) })
+	local fieldStroke = Util.stroke()
+	fieldStroke.Parent = field
+	local keyIcon = Util.icon("key-round", 15, "TextMuted")
+	keyIcon.AnchorPoint = Vector2.new(0, 0.5)
+	keyIcon.Position = UDim2.new(0, 12, 0.5, 0)
+	keyIcon.Parent = field
+	local input = Util.create("TextBox", {
+		Name = "Key",
+		Position = UDim2.fromOffset(36, 0),
+		Size = UDim2.new(1, -48, 1, 0),
+		PlaceholderText = tostring(options.Placeholder or "Paste your key here"),
+		TextSize = 14,
+		ClearTextOnFocus = false,
+		Theme = { TextColor3 = "Text", PlaceholderColor3 = "TextMuted" },
+		Parent = field,
+	})
+
+	local status = Util.create("TextLabel", {
+		Name = "Status",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Text = "",
+		TextSize = 12,
+		TextWrapped = true,
+		Visible = false,
+		LayoutOrder = 4,
+		Theme = { TextColor3 = "Danger" },
+		Parent = card,
+	})
+
+	-- Buttons
+	local row = Util.create("Frame", {
+		Name = "Buttons",
+		Size = UDim2.new(1, 0, 0, 36),
+		BackgroundTransparency = 1,
+		LayoutOrder = 5,
+		Parent = card,
+	}, {
+		Util.list(8, Enum.FillDirection.Horizontal, Enum.VerticalAlignment.Center, Enum.HorizontalAlignment.Right),
+	})
+
+	local hasLink = type(options.Link) == "string" and options.Link ~= ""
+	local getKey
+	if hasLink then
+		getKey = Util.create("TextButton", {
+			Name = "GetKey",
+			Size = UDim2.new(0.5, -4, 1, 0),
+			Text = "Get key",
+			FontFace = Util.Fonts.SemiBold,
+			TextSize = 13,
+			LayoutOrder = 1,
+			Theme = {
+				BackgroundColor3 = "Input",
+				BackgroundTransparency = "InputTransparency",
+				TextColor3 = "Text",
+			},
+			Parent = row,
+		}, {
+			Util.corner(8),
+			Util.stroke(),
+		})
+	end
+
+	local submit = Util.create("TextButton", {
+		Name = "Continue",
+		Size = UDim2.new(hasLink and 0.5 or 1, hasLink and -4 or 0, 1, 0),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0,
+		Text = "Continue",
+		FontFace = Util.Fonts.SemiBold,
+		TextSize = 13,
+		LayoutOrder = 2,
+		Theme = { TextColor3 = "OnAccent" },
+		Parent = row,
+	}, {
+		Util.corner(8),
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence } }),
+	})
+
+	local function finish(result)
+		if finished then
+			return
+		end
+		finished = true
+		Spring.animate(backdrop, "Snappy", { BackgroundTransparency = 1 })
+		Spring.animate(scale, "Snappy", { Scale = 0.96 })
+		Spring.animate(frame, "Snappy", { GroupTransparency = 1 }, function()
+			maid:Clean()
+		end)
+		if type(options.Callback) == "function" then
+			task.spawn(options.Callback, result)
+		end
+		if waiting then
+			waiting = false
+			task.spawn(thread, result)
+		end
+	end
+
+	local function shake()
+		local base = UDim2.fromScale(0.5, 0.5)
+		frame.Position = base + UDim2.fromOffset(14, 0)
+		Spring.target(frame, 0.25, 7, { Position = base })
+	end
+
+	local checking = false
+	local function attempt()
+		if checking or finished then
+			return
+		end
+		local key = trim(input.Text)
+		if key == "" then
+			status.Text = "Enter a key first."
+			Theme.bind(status, { TextColor3 = "Danger" })
+			status.Visible = true
+			shake()
+			return
+		end
+		checking = true
+		submit.Text = "Checking..."
+		local valid = check(key)
+		checking = false
+		if finished then
+			return
+		end
+		if valid then
+			submit.Text = "Unlocked"
+			status.Visible = false
+			Theme.animate(fieldStroke, { Color = "Success", Transparency = 0.2 })
+			if options.SaveKey ~= false then
+				Env.writeFile(savePath, key)
+			end
+			task.delay(0.45, function()
+				finish(true)
+			end)
+		else
+			submit.Text = "Continue"
+			status.Text = tostring(options.InvalidText or "That key isn't valid. Check it and try again.")
+			Theme.bind(status, { TextColor3 = "Danger" })
+			status.Visible = true
+			Theme.animate(fieldStroke, { Color = "Danger", Transparency = 0.2 })
+			shake()
+		end
+	end
+
+	maid:Give(submit.Activated:Connect(attempt))
+	maid:Give(input.FocusLost:Connect(function(enterPressed)
+		if enterPressed then
+			attempt()
+		end
+	end))
+	maid:Give(input:GetPropertyChangedSignal("Text"):Connect(function()
+		if status.Visible then
+			status.Visible = false
+			Theme.animate(fieldStroke, { Color = "Stroke", Transparency = "StrokeTransparency" })
+		end
+	end))
+	maid:Give(close.Activated:Connect(function()
+		finish(false)
+	end))
+	if getKey then
+		maid:Give(getKey.Activated:Connect(function()
+			if Env.copy(options.Link) then
+				Notifications.notify({ Title = "Link copied", Content = "Open it in your browser to get a key.", Type = "Success" })
+			else
+				status.Text = "Get your key at: " .. options.Link
+				status.Visible = true
+				Theme.bind(status, { TextColor3 = "TextDim" })
+			end
+		end))
+	end
+
+	Spring.animate(backdrop, "Snappy", { BackgroundTransparency = 0.45 })
+	Spring.animate(scale, "Bouncy", { Scale = 1 })
+	Spring.animate(frame, "Snappy", { GroupTransparency = 0 })
+
+	-- Unload while waiting: resolve as closed.
+	maid:Give(library.Unloaded:Connect(function()
+		finish(false)
+	end))
+
+	if type(options.Callback) == "function" and options.Yield == false then
+		return nil
+	end
+	waiting = true
+	return coroutine.yield()
+end
+
+return KeySystem
+end
+
+-- ======================================================================
+-- Features/Notifications
+__modules["Features/Notifications"] = function()
+-- Aether · Features/Notifications
+--   Aether:Notify({ Title = "Saved", Content = "Config 'Legit' saved.", Type = "Success", Duration = 4 })
+--   Aether:Notify({ Title = "Teleported", Actions = { { Name = "Undo", Callback = fn } } })
+-- Types: Info (default), Success, Warning, Error. Duration = false keeps it until closed.
+-- Stacked bottom-right on desktop, top-centre on touch devices. Hovering pauses the timer.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Signal = import("Core/Signal")
+local Maid = import("Core/Maid")
+local Log = import("Core/Log")
+local Overlay = import("Features/Overlay")
+local Compat = import("Features/Compat")
+
+local RunService = Env.service("RunService")
+local GuiService = Env.service("GuiService")
+
+local Notifications = {}
+
+local WIDTH = 320
+local GAP = 10
+local MARGIN = 16
+local MAX_VISIBLE = 5
+
+local KINDS = {
+	info = { Icon = "info", Color = "Accent" },
+	success = { Icon = "check-circle", Color = "Success" },
+	warning = { Icon = "alert-triangle", Color = "Warning" },
+	error = { Icon = "alert-circle", Color = "Danger" },
+}
+
+local cards = {} -- oldest first
+local heartbeat = nil
+
+local Notification = {}
+Notification.__index = Notification
+
+local function layout()
+	local touch = Util.isTouch()
+	local inset = GuiService:GetGuiInset()
+	local offset = 0
+	for index = #cards, 1, -1 do
+		local card = cards[index]
+		local height = card.Frame.AbsoluteSize.Y
+		local goal
+		if touch then
+			goal = UDim2.new(0.5, 0, 0, inset.Y + 10 + offset)
+		else
+			goal = UDim2.new(1, -MARGIN, 1, -MARGIN - offset)
+		end
+		card._goal = goal
+		if card._entered then
+			Spring.animate(card.Frame, "Gentle", { Position = goal })
+		elseif height > 0 then
+			-- First layout with a real height: slide in from the edge.
+			card._entered = true
+			card.Frame.Position = touch and (goal + UDim2.fromOffset(0, -18)) or (goal + UDim2.fromOffset(48, 0))
+			Spring.animate(card.Frame, "Gentle", { Position = goal })
+			Spring.animate(card.Frame, "Snappy", { GroupTransparency = 0 })
+		end
+		offset += height + GAP
+	end
+end
+
+local function ensureHeartbeat()
+	if heartbeat then
+		return
+	end
+	heartbeat = RunService.Heartbeat:Connect(function(dt)
+		for _, card in ipairs(table.clone(cards)) do
+			if card.Duration and not card.Paused then
+				card.Remaining -= dt
+				card._progress.Size = UDim2.fromScale(math.clamp(card.Remaining / card.Duration, 0, 1), 1)
+				if card.Remaining <= 0 then
+					card:Dismiss()
+				end
+			end
+		end
+		if #cards == 0 and heartbeat then
+			heartbeat:Disconnect()
+			heartbeat = nil
+		end
+	end)
+end
+
+local function actionButton(action, primary, parent, onDone)
+	local button = Util.create("TextButton", {
+		Name = tostring(action.Name or action.Title or "Action"),
+		Size = UDim2.fromOffset(0, 26),
+		AutomaticSize = Enum.AutomaticSize.X,
+		Text = tostring(action.Name or action.Title or "OK"),
+		TextSize = 12,
+		FontFace = Util.Fonts.SemiBold,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = primary and "Accent" or "Text",
+		},
+		Parent = parent,
+	}, {
+		Util.corner(6),
+		Util.stroke(),
+		Util.padding(0, 10, 0, 10),
+	})
+	button.Activated:Connect(function()
+		if type(action.Callback) == "function" then
+			task.spawn(function()
+				local ok, err = pcall(action.Callback)
+				if not ok then
+					Log.error("Notification action failed: " .. tostring(err))
+				end
+			end)
+		end
+		if not action.KeepOpen then
+			onDone()
+		end
+	end)
+	return button
+end
+
+function Notifications.notify(options)
+	if type(options) == "string" then
+		options = { Title = options }
+	end
+	options = options or {}
+
+	local kind = KINDS[string.lower(tostring(options.Type or options.Kind or "info"))] or KINDS.info
+	local title = tostring(options.Title or options.Name or "Notification")
+	local content = options.Content or options.Description or options.Text
+	local duration = options.Duration
+	if duration == nil then
+		duration = 4 + (content and math.min(#tostring(content) / 40, 4) or 0)
+	end
+	if duration == false or duration == 0 then
+		duration = nil
+	end
+
+	local self = setmetatable({}, Notification)
+	self.Maid = Maid.new()
+	self.Dismissed = Signal.new("Notification.Dismissed")
+	self.Duration = duration
+	self.Remaining = duration or 0
+	self.Paused = false
+
+	local touch = Util.isTouch()
+	local layer = Overlay.layer("Notifications")
+	local width = touch and math.min(WIDTH, layer.AbsoluteSize.X - 24) or WIDTH
+
+	local frame = Util.create("CanvasGroup", {
+		Name = "Notification",
+		AnchorPoint = touch and Vector2.new(0.5, 0) or Vector2.new(1, 1),
+		Position = touch and UDim2.new(0.5, 0, 0, -200) or UDim2.new(1, 400, 1, -MARGIN),
+		Size = UDim2.fromOffset(width, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		GroupTransparency = 1,
+		Parent = layer,
+	}, {
+		Util.corner(12),
+		Util.padding(1),
+	})
+	self.Frame = frame
+	self.Maid:Give(frame)
+
+	local card = Util.create("Frame", {
+		Name = "Card",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = frame,
+	}, {
+		Util.corner(11),
+		Util.stroke(),
+		Util.padding(12, 12, 14, 12),
+	})
+
+	local tile = Util.create("Frame", {
+		Name = "Tile",
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundTransparency = 0.84,
+		Theme = { BackgroundColor3 = kind.Color },
+		Parent = card,
+	}, { Util.corner(8) })
+	local icon = Util.icon(options.Icon or options.Image or kind.Icon, 16, kind.Color)
+	icon.AnchorPoint = Vector2.new(0.5, 0.5)
+	icon.Position = UDim2.fromScale(0.5, 0.5)
+	icon.Parent = tile
+
+	local body = Util.create("Frame", {
+		Name = "Body",
+		Position = UDim2.fromOffset(42, 0),
+		Size = UDim2.new(1, -66, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		Parent = card,
+	}, { Util.list(3) })
+
+	self._title = Util.create("TextLabel", {
+		Name = "Title",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Text = title,
+		FontFace = Util.Fonts.SemiBold,
+		TextSize = 14,
+		TextWrapped = true,
+		LayoutOrder = 1,
+		Theme = { TextColor3 = "Text" },
+		Parent = body,
+	})
+
+	self._content = Util.create("TextLabel", {
+		Name = "Content",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Text = content and tostring(content) or "",
+		TextSize = 13,
+		TextWrapped = true,
+		Visible = content ~= nil and content ~= "",
+		LayoutOrder = 2,
+		Theme = { TextColor3 = "TextDim" },
+		Parent = body,
+	})
+
+	local actions = Compat.actionList(options.Actions or options.Buttons)
+	if actions then
+		local row = Util.create("Frame", {
+			Name = "Actions",
+			Size = UDim2.new(1, 0, 0, 32),
+			BackgroundTransparency = 1,
+			LayoutOrder = 3,
+			Parent = body,
+		}, {
+			Util.list(6, Enum.FillDirection.Horizontal, Enum.VerticalAlignment.Bottom),
+		})
+		for index, action in ipairs(actions) do
+			actionButton(action, index == 1, row, function()
+				self:Dismiss()
+			end)
+		end
+	end
+
+	local close = Util.create("TextButton", {
+		Name = "Close",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.fromScale(1, 0),
+		Size = UDim2.fromOffset(20, 20),
+		Parent = card,
+	})
+	local closeGlyph = Util.glyph("close", { Size = 10, Color = "TextMuted", Thickness = 1.5 })
+	closeGlyph.AnchorPoint = Vector2.new(0.5, 0.5)
+	closeGlyph.Position = UDim2.fromScale(0.5, 0.5)
+	closeGlyph.Parent = close
+	self.Maid:Give(close.Activated:Connect(function()
+		self:Dismiss()
+	end))
+
+	-- Time left, shrinking along the bottom edge.
+	self._progress = Util.create("Frame", {
+		Name = "Progress",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.fromScale(0, 1),
+		Size = UDim2.fromScale(1, 0),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Visible = duration ~= nil,
+		ZIndex = 2,
+		Parent = frame,
+	})
+	Util.create("Frame", {
+		Name = "Track",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.fromScale(0, 1),
+		Size = UDim2.new(1, 0, 0, 2),
+		BackgroundTransparency = 1,
+		ZIndex = 2,
+		Parent = frame,
+	}, { self._progress })
+	self._progress.Size = UDim2.fromScale(1, 1)
+	Util.create("UIGradient", { Theme = { Color = Theme.accentSequence }, Parent = self._progress })
+
+	self.Maid:Give(frame.MouseEnter:Connect(function()
+		self.Paused = true
+	end))
+	self.Maid:Give(frame.MouseLeave:Connect(function()
+		self.Paused = false
+	end))
+	self.Maid:Give(frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout))
+
+	table.insert(cards, self)
+	while #cards > MAX_VISIBLE do
+		cards[1]:Dismiss()
+	end
+	task.defer(layout)
+	if duration then
+		ensureHeartbeat()
+	end
+
+	if type(options.Callback) == "function" then
+		self.Dismissed:Connect(options.Callback)
+	end
+	return self
+end
+
+function Notification:Dismiss()
+	if self.Leaving then
+		return
+	end
+	self.Leaving = true
+	local index = table.find(cards, self)
+	if index then
+		table.remove(cards, index)
+	end
+	layout()
+
+	local touch = Util.isTouch()
+	local goal = self._goal or self.Frame.Position
+	local exit = touch and (goal + UDim2.fromOffset(0, -14)) or (goal + UDim2.fromOffset(56, 0))
+	Spring.animate(self.Frame, "Snappy", { GroupTransparency = 1, Position = exit }, function()
+		self.Maid:Clean()
+	end)
+	self.Dismissed:Fire()
+	self.Dismissed:DisconnectAll()
+end
+
+Notification.Close = Notification.Dismiss
+
+function Notification:Update(options)
+	if options.Title ~= nil then
+		self._title.Text = tostring(options.Title)
+	end
+	local content = options.Content or options.Description or options.Text
+	if content ~= nil then
+		self._content.Text = tostring(content)
+		self._content.Visible = content ~= ""
+	end
+	if options.Duration ~= nil and options.Duration ~= false then
+		self.Duration = options.Duration
+		self.Remaining = options.Duration
+		self._progress.Visible = true
+		ensureHeartbeat()
+	end
+	return self
+end
+
+function Notifications.clear()
+	for _, card in ipairs(table.clone(cards)) do
+		card.Maid:Clean()
+	end
+	table.clear(cards)
+	if heartbeat then
+		heartbeat:Disconnect()
+		heartbeat = nil
+	end
+end
+
+return Notifications
+end
+
+-- ======================================================================
+-- Features/Overlay
+__modules["Features/Overlay"] = function()
+-- Aether · Features/Overlay
+-- A top-level ScreenGui shared by everything that floats above windows:
+-- pinned widgets, notifications, the command palette, menus and tooltips.
+-- It stays visible when windows are hidden.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+
+local Overlay = {}
+
+local ORDER = {
+	Widgets = 1,
+	Notifications = 2,
+	Palette = 3,
+	Menu = 4,
+	Tooltip = 5,
+}
+
+local gui = nil
+local layers = {}
+
+function Overlay.gui()
+	if gui and gui.Parent then
+		return gui
+	end
+	gui = Util.create("ScreenGui", {
+		Name = "AetherOverlay",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 10000,
+	})
+	table.clear(layers)
+	Env.mount(gui)
+	return gui
+end
+
+-- A full-screen, input-transparent frame for one kind of floating content.
+function Overlay.layer(name)
+	local root = Overlay.gui()
+	local layer = layers[name]
+	if layer and layer.Parent then
+		return layer
+	end
+	layer = Util.create("Frame", {
+		Name = name,
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ZIndex = ORDER[name] or 1,
+		Parent = root,
+	})
+	layers[name] = layer
+	return layer
+end
+
+function Overlay.size()
+	return Overlay.gui().AbsoluteSize
+end
+
+function Overlay.destroy()
+	if gui then
+		gui:Destroy()
+		gui = nil
+	end
+	table.clear(layers)
+end
+
+return Overlay
+end
+
+-- ======================================================================
+-- Features/Palette
+__modules["Features/Palette"] = function()
+-- Aether · Features/Palette
+-- The command palette (Ctrl+K, or the search button in the topbar).
+-- Fuzzy-searches every element, tab and built-in command of a window:
+--   Toggles flip in place (the palette stays open), buttons press,
+--   other elements are revealed: tab selected, scrolled into view, highlighted.
+-- Works while the window is hidden, so features can be used without opening it.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Maid = import("Core/Maid")
+local Fuzzy = import("Core/Fuzzy")
+local Overlay = import("Features/Overlay")
+
+local UserInputService = Env.service("UserInputService")
+
+local Palette = {}
+Palette.__index = Palette
+
+local ROW_HEIGHT = 46
+local ROW_GAP = 2
+local MAX_ROWS = 7
+local HEADER = 54
+local FOOTER = 34
+local LIST_PADDING = 6
+local MAX_RESULTS = 60
+local MAX_RECENT = 6
+
+local TYPE_ICONS = {
+	Toggle = "toggle-right",
+	Slider = "sliders-horizontal",
+	Button = "mouse-pointer-click",
+	Dropdown = "list",
+	Input = "text-cursor-input",
+	Keybind = "keyboard",
+	ColorPicker = "palette",
+}
+
+function Palette.new(window)
+	return setmetatable({
+		Window = window,
+		IsOpen = false,
+		_built = false,
+		_items = {},
+		_results = {},
+		_rows = {},
+		_selected = 1,
+		_recent = {},
+	}, Palette)
+end
+
+function Palette:_width()
+	return math.min(580, Overlay.size().X - 32)
+end
+
+function Palette:_build()
+	self._built = true
+	local maid = Maid.new()
+	self._maid = maid
+	self.Window.Maid:Give(maid)
+
+	local layer = Overlay.layer("Palette")
+
+	local backdrop = Util.create("TextButton", {
+		Name = "PaletteBackdrop",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 1,
+		Visible = false,
+		Parent = layer,
+	})
+	maid:Give(backdrop)
+	maid:Give(backdrop.Activated:Connect(function()
+		self:Close()
+	end))
+	self._backdrop = backdrop
+
+	local panel = Util.create("CanvasGroup", {
+		Name = "Palette",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromScale(0.5, 0.14),
+		Size = UDim2.fromOffset(self:_width(), HEADER + FOOTER),
+		GroupTransparency = 1,
+		Visible = false,
+		ZIndex = 2,
+		Parent = layer,
+	}, {
+		Util.corner(14),
+		Util.padding(1),
+	})
+	maid:Give(panel)
+	self._panel = panel
+	self._scale = Util.create("UIScale", { Parent = panel })
+
+	local card = Util.create("Frame", {
+		Name = "Card",
+		Size = UDim2.fromScale(1, 1),
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = panel,
+	}, {
+		Util.corner(13),
+		Util.stroke(),
+	})
+
+	-- Header: search field
+	local searchIcon = Util.icon("search", 18, "TextMuted")
+	searchIcon.AnchorPoint = Vector2.new(0, 0.5)
+	searchIcon.Position = UDim2.new(0, 18, 0, HEADER / 2)
+	searchIcon.Parent = card
+
+	local input = Util.create("TextBox", {
+		Name = "Query",
+		Position = UDim2.fromOffset(48, 0),
+		Size = UDim2.new(1, -110, 0, HEADER),
+		PlaceholderText = "Search features, tabs and commands...",
+		TextSize = 16,
+		Theme = { TextColor3 = "Text", PlaceholderColor3 = "TextMuted" },
+		Parent = card,
+	})
+	self._input = input
+
+	local escChip = Util.create("TextLabel", {
+		Name = "Esc",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -16, 0, HEADER / 2),
+		Size = UDim2.fromOffset(34, 22),
+		Text = "esc",
+		FontFace = Util.Fonts.Medium,
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		BackgroundTransparency = 0,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "TextMuted",
+		},
+		Parent = card,
+	}, {
+		Util.corner(5),
+		Util.stroke(),
+	})
+	escChip.Visible = not self.Window.IsTouch
+
+	Util.create("Frame", {
+		Name = "Divider",
+		Position = UDim2.fromOffset(0, HEADER),
+		Size = UDim2.new(1, 0, 0, 1),
+		Theme = {
+			BackgroundColor3 = "Divider",
+			BackgroundTransparency = "DividerTransparency",
+		},
+		Parent = card,
+	})
+
+	-- Results
+	local list = Util.create("ScrollingFrame", {
+		Name = "Results",
+		Position = UDim2.fromOffset(0, HEADER + 1),
+		Size = UDim2.new(1, 0, 1, -(HEADER + FOOTER + 2)),
+		ScrollBarThickness = 3,
+		Theme = { ScrollBarImageColor3 = "TextMuted" },
+		Parent = card,
+	}, {
+		Util.padding(LIST_PADDING, 6, LIST_PADDING, 6),
+		Util.list(ROW_GAP),
+	})
+	self._list = list
+
+	self._empty = Util.create("TextLabel", {
+		Name = "Empty",
+		Size = UDim2.new(1, 0, 0, ROW_HEIGHT),
+		Text = "No matches",
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Visible = false,
+		LayoutOrder = 1e6,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = list,
+	})
+
+	-- Footer: hints
+	Util.create("Frame", {
+		Name = "FooterDivider",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 0, 1, -FOOTER),
+		Size = UDim2.new(1, 0, 0, 1),
+		Theme = {
+			BackgroundColor3 = "Divider",
+			BackgroundTransparency = "DividerTransparency",
+		},
+		Parent = card,
+	})
+	Util.create("TextLabel", {
+		Name = "Hints",
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 18, 1, 0),
+		Size = UDim2.new(1, -36, 0, FOOTER),
+		Text = self.Window.IsTouch and "Tap a result to run it"
+			or "Up/Down to move  ·  Enter to run  ·  Esc to close",
+		TextSize = 12,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = card,
+	})
+
+	maid:Give(input:GetPropertyChangedSignal("Text"):Connect(function()
+		if self.IsOpen then
+			self:_refresh()
+		end
+	end))
+
+	maid:Give(input.FocusLost:Connect(function(enterPressed)
+		if not self.IsOpen then
+			return
+		end
+		if enterPressed then
+			self:_run(self._results[self._selected])
+		elseif UserInputService:IsKeyDown(Enum.KeyCode.Escape) then
+			self:Close()
+		end
+	end))
+
+	maid:Give(UserInputService.InputBegan:Connect(function(input)
+		if not self.IsOpen then
+			return
+		end
+		local key = input.KeyCode
+		if key == Enum.KeyCode.Down then
+			self:_move(1)
+		elseif key == Enum.KeyCode.Up then
+			self:_move(-1)
+		elseif key == Enum.KeyCode.Escape then
+			self:Close()
+		end
+	end))
+end
+
+---------------------------------------------------------------------------
+-- Items
+---------------------------------------------------------------------------
+
+function Palette:_collect()
+	local window = self.Window
+	local library = window.Library
+	local items = {}
+
+	for _, element in ipairs(window.Elements) do
+		local icon = TYPE_ICONS[element.Type]
+		if icon and element.Visible and not element.Destroyed and element.Section.Visible and element.Tab.Visible then
+			local path = element.Tab.Name
+			if element.Section.Name and element.Section.Name ~= "" then
+				path ..= "  ›  " .. element.Section.Name
+			end
+			table.insert(items, {
+				Id = "element:" .. element:GetId(),
+				Kind = "Element",
+				Title = element.Name,
+				Subtitle = path,
+				Icon = icon,
+				Element = element,
+			})
+		end
+	end
+
+	for _, tab in ipairs(window.Tabs) do
+		if tab.Visible then
+			table.insert(items, {
+				Id = "tab:" .. tab.Name,
+				Kind = "Tab",
+				Title = tab.Name,
+				Subtitle = "Go to tab",
+				Icon = type(tab.IconName) == "string" and tab.IconName or "layout-panel-left",
+				Tab = tab,
+			})
+		end
+	end
+
+	local function command(id, title, icon, run, extra)
+		local item = {
+			Id = "command:" .. id,
+			Kind = "Command",
+			Title = title,
+			Subtitle = "Command",
+			Icon = icon,
+			Run = run,
+		}
+		if extra then
+			for key, value in pairs(extra) do
+				item[key] = value
+			end
+		end
+		table.insert(items, item)
+	end
+
+	command("visibility", window.Visible and "Hide window" or "Show window", window.Visible and "eye-off" or "eye", function()
+		window:Toggle()
+	end, { Value = Util.keyName(window:GetToggleKey()) })
+	command("minimize", window.Minimized and "Restore window" or "Minimize window", "minimize-2", function()
+		window:Show()
+		window:Minimize()
+	end)
+	for _, name in ipairs(Theme.names()) do
+		command("theme:" .. name, "Theme: " .. name, "palette", function()
+			library:SetTheme(name)
+			window:_savePrefs()
+		end, { Value = Theme.Name == name and "Current" or nil })
+	end
+	command("motion", "Reduced motion", "wind", function()
+		library:SetReducedMotion(not library.ReducedMotion)
+		window:_savePrefs()
+	end, { Value = library.ReducedMotion and "On" or "Off" })
+	command("share", "Copy config share code", "share-2", function()
+		window:_copyShareCode()
+	end)
+	command("unload", "Unload interface", "power", function()
+		window:Dialog({
+			Title = "Unload the interface?",
+			Content = "Every window and widget is removed. Run the script again to bring it back.",
+			Buttons = {
+				{ Name = "Cancel" },
+				{ Name = "Unload", Danger = true, Callback = function()
+					library:Unload()
+				end },
+			},
+		})
+	end, { Danger = true })
+
+	return items
+end
+
+function Palette:_find(id)
+	for _, item in ipairs(self._items) do
+		if item.Id == id then
+			return item
+		end
+	end
+	return nil
+end
+
+function Palette:_refresh()
+	local query = self._input.Text
+	local results = {}
+
+	if query == "" then
+		local seen = {}
+		for _, id in ipairs(self._recent) do
+			local item = self:_find(id)
+			if item then
+				seen[id] = true
+				table.insert(results, { Item = item, Recent = true })
+			end
+		end
+		for _, item in ipairs(self._items) do
+			if not seen[item.Id] and item.Kind ~= "Command" then
+				table.insert(results, { Item = item })
+			end
+		end
+	else
+		for _, item in ipairs(self._items) do
+			local score, indices = Fuzzy.match(query, item.Title)
+			local pathScore = Fuzzy.match(query, item.Subtitle .. " " .. item.Title)
+			if score or pathScore then
+				-- Matches in the title beat matches that need the tab/section path.
+				local best = score or -math.huge
+				if pathScore and pathScore * 0.5 > best then
+					best = pathScore * 0.5
+					indices = nil
+				end
+				if item.Kind == "Command" then
+					best -= 2
+				end
+				table.insert(results, { Item = item, Score = best, Indices = indices })
+			end
+		end
+		table.sort(results, function(a, b)
+			return a.Score > b.Score
+		end)
+	end
+
+	while #results > MAX_RESULTS do
+		table.remove(results)
+	end
+	self._results = results
+	self._selected = 1
+	self._list.CanvasPosition = Vector2.zero
+	self:_render()
+end
+
+---------------------------------------------------------------------------
+-- Rendering
+---------------------------------------------------------------------------
+
+function Palette:_row(index)
+	local row = self._rows[index]
+	if row then
+		return row
+	end
+
+	local button = Util.create("TextButton", {
+		Name = "Result",
+		Size = UDim2.new(1, 0, 0, ROW_HEIGHT),
+		LayoutOrder = index,
+		BackgroundTransparency = 1,
+		Theme = { BackgroundColor3 = "Accent" },
+		Parent = self._list,
+	}, { Util.corner(8) })
+
+	local tile = Util.create("Frame", {
+		Name = "Tile",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(30, 30),
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = button,
+	}, { Util.corner(8) })
+	local icon = Util.icon(nil, 16, "TextDim")
+	icon.AnchorPoint = Vector2.new(0.5, 0.5)
+	icon.Position = UDim2.fromScale(0.5, 0.5)
+	icon.Parent = tile
+
+	local title = Util.create("TextLabel", {
+		Name = "Title",
+		Position = UDim2.fromOffset(48, 6),
+		Size = UDim2.new(1, -170, 0, 18),
+		RichText = true,
+		FontFace = Util.Fonts.Medium,
+		TextSize = 14,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "Text" },
+		Parent = button,
+	})
+
+	local subtitle = Util.create("TextLabel", {
+		Name = "Subtitle",
+		Position = UDim2.fromOffset(48, 24),
+		Size = UDim2.new(1, -170, 0, 15),
+		TextSize = 12,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = button,
+	})
+
+	local value = Util.create("TextLabel", {
+		Name = "Value",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(110, 20),
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "TextDim" },
+		Parent = button,
+	})
+
+	row = {
+		Button = button,
+		Icon = icon,
+		Title = title,
+		Subtitle = subtitle,
+		Value = value,
+	}
+	self._maid:Give(button.MouseEnter:Connect(function()
+		if self._rows[index] and self._results[index] and self._selected ~= index then
+			self._selected = index
+			self:_paintSelection()
+		end
+	end))
+	self._maid:Give(button.Activated:Connect(function()
+		self:_run(self._results[index])
+	end))
+	self._rows[index] = row
+	return row
+end
+
+local function valueOf(item)
+	if item.Kind == "Element" then
+		local ok, text = pcall(item.Element._display, item.Element)
+		return ok and text or ""
+	end
+	return item.Value or ""
+end
+
+function Palette:_render()
+	local accentHex = Theme.get("Accent"):ToHex()
+	for index, result in ipairs(self._results) do
+		local item = result.Item
+		local row = self:_row(index)
+		row.Button.Visible = true
+		row.Title.Text = Fuzzy.highlight(item.Title, result.Indices, accentHex)
+		row.Subtitle.Text = result.Recent and ("Recent  ·  " .. item.Subtitle) or item.Subtitle
+		row.Value.Text = valueOf(item)
+		Util.iconSet(row.Icon, item.Icon)
+		Theme.bind(row.Title, { TextColor3 = item.Danger and "Danger" or "Text" })
+	end
+	for index = #self._results + 1, #self._rows do
+		self._rows[index].Button.Visible = false
+	end
+	self._empty.Visible = #self._results == 0
+	self:_paintSelection()
+	self:_resize()
+end
+
+function Palette:_paintSelection()
+	for index, row in pairs(self._rows) do
+		local selected = index == self._selected
+		Theme.animate(row.Button, { BackgroundTransparency = selected and 0.86 or 1 }, "Quick")
+		Theme.animate(row.Icon, { ImageColor3 = selected and "Accent" or "TextDim" }, "Quick")
+	end
+end
+
+function Palette:_resize()
+	local rows = math.clamp(#self._results, 1, MAX_ROWS)
+	local listHeight = rows * ROW_HEIGHT + (rows - 1) * ROW_GAP + LIST_PADDING * 2
+	local height = HEADER + 1 + listHeight + 1 + FOOTER
+	Spring.animate(self._panel, "Snappy", { Size = UDim2.fromOffset(self:_width(), height) })
+end
+
+function Palette:_move(direction)
+	local count = #self._results
+	if count == 0 then
+		return
+	end
+	self._selected = (self._selected - 1 + direction) % count + 1
+	self:_paintSelection()
+
+	-- Keep the selection in view.
+	local top = LIST_PADDING + (self._selected - 1) * (ROW_HEIGHT + ROW_GAP)
+	local visible = math.clamp(count, 1, MAX_ROWS) * (ROW_HEIGHT + ROW_GAP)
+	local canvas = self._list.CanvasPosition.Y
+	if top < canvas then
+		self._list.CanvasPosition = Vector2.new(0, math.max(0, top - LIST_PADDING))
+	elseif top + ROW_HEIGHT > canvas + visible then
+		self._list.CanvasPosition = Vector2.new(0, top + ROW_HEIGHT - visible + LIST_PADDING)
+	end
+end
+
+---------------------------------------------------------------------------
+-- Running
+---------------------------------------------------------------------------
+
+function Palette:_remember(item)
+	local index = table.find(self._recent, item.Id)
+	if index then
+		table.remove(self._recent, index)
+	end
+	table.insert(self._recent, 1, item.Id)
+	while #self._recent > MAX_RECENT do
+		table.remove(self._recent)
+	end
+end
+
+function Palette:_run(result)
+	if not result then
+		return
+	end
+	local item = result.Item
+	local window = self.Window
+	self:_remember(item)
+
+	if item.Kind == "Element" then
+		local element = item.Element
+		if element.Destroyed then
+			return
+		end
+		if element.Type == "Toggle" then
+			if not element.Disabled then
+				element:Toggle()
+			end
+			-- Stay open so several toggles can be flipped in a row.
+			task.defer(function()
+				if self.IsOpen then
+					self:_render()
+					self._input:CaptureFocus()
+				end
+			end)
+			return
+		elseif element.Type == "Button" then
+			self:Close()
+			element:Press()
+		else
+			self:Close()
+			window:Reveal(element)
+		end
+	elseif item.Kind == "Tab" then
+		self:Close()
+		window:Show()
+		window:SelectTab(item.Tab)
+	else
+		self:Close()
+		task.spawn(item.Run)
+	end
+end
+
+---------------------------------------------------------------------------
+-- Open / close
+---------------------------------------------------------------------------
+
+function Palette:Open()
+	if self.IsOpen or self.Window.Destroyed then
+		return self
+	end
+	if not self._built then
+		self:_build()
+	end
+	self.IsOpen = true
+	self._items = self:_collect()
+	self._input.Text = ""
+	self:_refresh()
+
+	local backdrop, panel = self._backdrop, self._panel
+	backdrop.Visible = true
+	panel.Visible = true
+	self._scale.Scale = 0.96
+	Spring.animate(backdrop, "Snappy", { BackgroundTransparency = 0.5 })
+	Spring.animate(panel, "Snappy", { GroupTransparency = 0 })
+	Spring.animate(self._scale, "Bouncy", { Scale = 1 })
+
+	task.defer(function()
+		if self.IsOpen then
+			self._input:CaptureFocus()
+		end
+	end)
+	return self
+end
+
+function Palette:Close()
+	if not self.IsOpen then
+		return self
+	end
+	self.IsOpen = false
+	self._input:ReleaseFocus()
+	local backdrop, panel = self._backdrop, self._panel
+	Spring.animate(backdrop, "Snappy", { BackgroundTransparency = 1 })
+	Spring.animate(self._scale, "Snappy", { Scale = 0.97 })
+	Spring.animate(panel, "Snappy", { GroupTransparency = 1 }, function()
+		if not self.IsOpen then
+			backdrop.Visible = false
+			panel.Visible = false
+		end
+	end)
+	return self
+end
+
+function Palette:Toggle()
+	if self.IsOpen then
+		return self:Close()
+	end
+	return self:Open()
+end
+
+return Palette
+end
+
+-- ======================================================================
+-- Features/Pins
+__modules["Features/Pins"] = function()
+-- Aether · Features/Pins
+-- Pinned widgets: small floating copies of elements that stay on screen
+-- (even while the window is hidden) and stay in sync with the original.
+-- Pin by dragging an element out of the window, from the right-click /
+-- long-press menu, or with element:Pin().
+
+local Util = import("Core/Util")
+local Theme = import("Core/Theme")
+local Spring = import("Core/Spring")
+local Signal = import("Core/Signal")
+local Maid = import("Core/Maid")
+local Overlay = import("Features/Overlay")
+
+local Pins = {}
+Pins.__index = Pins
+
+local WIDTH = 196
+
+---------------------------------------------------------------------------
+-- Widget bodies, one per element type. Each returns update(instant).
+---------------------------------------------------------------------------
+
+local builders = {}
+
+local function miniSwitch(parent)
+	local track = Util.create("Frame", {
+		Name = "Switch",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		Size = UDim2.fromOffset(32, 18),
+		Theme = { BackgroundColor3 = "Control" },
+		Parent = parent,
+	}, { Util.corner("full") })
+	local fill = Util.create("Frame", {
+		Name = "Fill",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 1,
+		Parent = track,
+	}, {
+		Util.corner("full"),
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence } }),
+	})
+	local knob = Util.create("Frame", {
+		Name = "Knob",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 3, 0.5, 0),
+		Size = UDim2.fromOffset(12, 12),
+		ZIndex = 2,
+		Theme = { BackgroundColor3 = "TextDim" },
+		Parent = track,
+	}, { Util.corner("full") })
+	return function(on)
+		Spring.animate(knob, "Bouncy", { Position = UDim2.new(0, on and 17 or 3, 0.5, 0) })
+		Spring.animate(fill, "Snappy", { BackgroundTransparency = on and 0 or 1 })
+		Theme.animate(knob, { BackgroundColor3 = on and "OnAccent" or "TextDim" })
+	end
+end
+
+builders.Toggle = function(widget, element)
+	local body = Util.create("TextButton", {
+		Name = "Body",
+		Size = UDim2.new(1, 0, 0, 24),
+		Parent = widget.Content,
+	})
+	local state = Util.create("TextLabel", {
+		Name = "State",
+		Size = UDim2.new(1, -40, 1, 0),
+		TextSize = 13,
+		FontFace = Util.Fonts.Medium,
+		Theme = { TextColor3 = "Text" },
+		Parent = body,
+	})
+	local setSwitch = miniSwitch(body)
+	widget.Maid:Give(body.Activated:Connect(function()
+		if not element.Disabled then
+			element:Toggle()
+		end
+	end))
+	return function()
+		state.Text = element.Value and "On" or "Off"
+		setSwitch(element.Value == true)
+	end
+end
+
+builders.Slider = function(widget, element)
+	local value = Util.create("TextLabel", {
+		Name = "Value",
+		Size = UDim2.new(1, 0, 0, 16),
+		TextSize = 13,
+		FontFace = Util.Fonts.Medium,
+		Theme = { TextColor3 = "Text" },
+		Parent = widget.Content,
+	})
+	local track = Util.create("TextButton", {
+		Name = "Track",
+		Position = UDim2.fromOffset(0, 20),
+		Size = UDim2.new(1, 0, 0, 14),
+		Parent = widget.Content,
+	})
+	local bar = Util.create("Frame", {
+		Name = "Bar",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.new(1, 0, 0, 4),
+		Theme = { BackgroundColor3 = "Control" },
+		Parent = track,
+	}, { Util.corner("full") })
+	local fill = Util.create("Frame", {
+		Name = "Fill",
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Parent = bar,
+	}, {
+		Util.corner("full"),
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence } }),
+	})
+	local knob = Util.create("Frame", {
+		Name = "Knob",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.fromOffset(10, 10),
+		Theme = { BackgroundColor3 = "Text" },
+		Parent = bar,
+	}, { Util.corner("full") })
+	Util.create("Frame", {
+		Name = "Space",
+		Position = UDim2.fromOffset(0, 34),
+		Size = UDim2.new(1, 0, 0, 0),
+		BackgroundTransparency = 1,
+		Parent = widget.Content,
+	})
+
+	local function setFromPointer(pointer)
+		local position, size = bar.AbsolutePosition, bar.AbsoluteSize
+		if size.X > 0 and not element.Disabled then
+			local alpha = math.clamp((pointer.X - position.X) / size.X, 0, 1)
+			element:Set(element.Min + (element.Max - element.Min) * alpha)
+		end
+	end
+	Util.draggable(track, {
+		Start = function(input)
+			setFromPointer(Util.pointer(input))
+		end,
+		Move = function(_, pointer)
+			setFromPointer(pointer)
+		end,
+		End = function()
+			element.Released:Fire(element.Value)
+		end,
+	}, widget.Maid)
+
+	return function(instant)
+		local alpha = element:_alpha()
+		value.Text = element:_display()
+		if instant then
+			fill.Size = UDim2.fromScale(alpha, 1)
+			knob.Position = UDim2.fromScale(alpha, 0.5)
+		else
+			Spring.animate(fill, "Quick", { Size = UDim2.fromScale(alpha, 1) })
+			Spring.animate(knob, "Quick", { Position = UDim2.fromScale(alpha, 0.5) })
+		end
+	end
+end
+
+builders.Button = function(widget, element)
+	local button = Util.create("TextButton", {
+		Name = "Run",
+		Size = UDim2.new(1, 0, 0, 28),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0,
+		Text = "Run",
+		FontFace = Util.Fonts.SemiBold,
+		TextSize = 13,
+		Theme = { TextColor3 = "OnAccent" },
+		Parent = widget.Content,
+	}, {
+		Util.corner(7),
+		Util.create("UIGradient", { Theme = { Color = Theme.accentSequence } }),
+	})
+	local scale = Util.create("UIScale", { Parent = button })
+	widget.Maid:Give(button.Activated:Connect(function()
+		if not element.Disabled then
+			scale.Scale = 0.94
+			Spring.animate(scale, "Bouncy", { Scale = 1 })
+			element:Press()
+		end
+	end))
+	return function() end
+end
+
+builders.Dropdown = function(widget, element)
+	local row = Util.create("Frame", {
+		Name = "Row",
+		Size = UDim2.new(1, 0, 0, 26),
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+		},
+		Parent = widget.Content,
+	}, { Util.corner(6) })
+	local value = Util.create("TextLabel", {
+		Name = "Value",
+		Position = UDim2.fromOffset(26, 0),
+		Size = UDim2.new(1, -52, 1, 0),
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "Text" },
+		Parent = row,
+	})
+	local function arrow(direction)
+		local button = Util.create("TextButton", {
+			Name = direction > 0 and "Next" or "Previous",
+			AnchorPoint = Vector2.new(direction > 0 and 1 or 0, 0),
+			Position = UDim2.fromScale(direction > 0 and 1 or 0, 0),
+			Size = UDim2.new(0, 26, 1, 0),
+			Parent = row,
+		})
+		local glyph = Util.glyph("chevron-right", { Size = 12, Color = "TextDim" })
+		glyph.AnchorPoint = Vector2.new(0.5, 0.5)
+		glyph.Position = UDim2.fromScale(0.5, 0.5)
+		glyph.Rotation = direction > 0 and 0 or 180
+		glyph.Parent = button
+		widget.Maid:Give(button.Activated:Connect(function()
+			if not element.Disabled then
+				element:Cycle(direction)
+			end
+		end))
+	end
+	if not element.Multi then
+		arrow(-1)
+		arrow(1)
+	end
+	return function()
+		value.Text = element:_display()
+	end
+end
+
+builders.Keybind = function(widget, element)
+	local row = Util.create("Frame", {
+		Name = "Row",
+		Size = UDim2.new(1, 0, 0, 24),
+		BackgroundTransparency = 1,
+		Parent = widget.Content,
+	})
+	local key = Util.create("TextLabel", {
+		Name = "Key",
+		Size = UDim2.fromOffset(0, 22),
+		AutomaticSize = Enum.AutomaticSize.X,
+		TextSize = 12,
+		FontFace = Util.Fonts.Medium,
+		BackgroundTransparency = 0,
+		Theme = {
+			BackgroundColor3 = "Input",
+			BackgroundTransparency = "InputTransparency",
+			TextColor3 = "Text",
+		},
+		Parent = row,
+	}, {
+		Util.corner(5),
+		Util.stroke(),
+		Util.padding(0, 8, 0, 8),
+	})
+	local dot = Util.create("Frame", {
+		Name = "State",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -2, 0.5, 0),
+		Size = UDim2.fromOffset(8, 8),
+		Visible = element.Mode ~= "Press",
+		Theme = { BackgroundColor3 = "TextMuted" },
+		Parent = row,
+	}, { Util.corner("full") })
+	widget.Maid:Give(element.BindChanged:Connect(function()
+		key.Text = element:_display()
+	end))
+	return function()
+		key.Text = element:_display()
+		Theme.animate(dot, { BackgroundColor3 = element.State and "Success" or "TextMuted" })
+	end
+end
+
+local function textBody(widget, getText)
+	local label = Util.create("TextLabel", {
+		Name = "Text",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		TextSize = 13,
+		TextWrapped = true,
+		Theme = { TextColor3 = "Text" },
+		Parent = widget.Content,
+	})
+	return function()
+		label.Text = getText()
+	end
+end
+
+builders.Label = function(widget, element)
+	return textBody(widget, function()
+		return element.Name
+	end)
+end
+
+builders.Paragraph = function(widget, element)
+	return textBody(widget, function()
+		return element.DescriptionLabel.Text
+	end)
+end
+
+---------------------------------------------------------------------------
+-- Pins
+---------------------------------------------------------------------------
+
+function Pins.new(window)
+	return setmetatable({
+		Window = window,
+		Widgets = {}, -- [id] = widget
+		Changed = Signal.new("Pins.Changed"),
+		_saved = {}, -- [id] = { X, Y } for everything pinned, including elements not created yet
+	}, Pins)
+end
+
+function Pins.canPin(element)
+	return element.Pinnable == true and builders[element.Type] ~= nil
+end
+
+-- A label's text is its body, so its header shows where it lives instead.
+local function headerText(element)
+	if element.Type == "Label" then
+		return element.Section.Name or element.Tab.Name
+	end
+	return element.Name
+end
+
+local function clampToScreen(x, y, width, height)
+	local screen = Overlay.size()
+	return math.clamp(x, 4, math.max(4, screen.X - width - 4)), math.clamp(y, 4, math.max(4, screen.Y - height - 4))
+end
+
+function Pins:IsPinned(element)
+	return self.Widgets[element:GetId()] ~= nil
+end
+
+-- Creates the widget. position: top-left corner in screen pixels (Vector2).
+function Pins:Pin(element, position, silent)
+	if not Pins.canPin(element) or element.Destroyed then
+		return nil
+	end
+	local id = element:GetId()
+	if self.Widgets[id] then
+		return self.Widgets[id]
+	end
+
+	if not position then
+		-- Stack new widgets down the left edge.
+		local count = 0
+		for _ in pairs(self.Widgets) do
+			count += 1
+		end
+		position = Vector2.new(16, 80 + count * 70)
+	end
+	local x, y = clampToScreen(position.X, position.Y, WIDTH, 60)
+
+	local maid = Maid.new()
+	local frame = Util.create("Frame", {
+		Name = "Widget",
+		Position = UDim2.fromOffset(x, y),
+		Size = UDim2.fromOffset(WIDTH, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Theme = {
+			BackgroundColor3 = "Background",
+			BackgroundTransparency = "BackgroundTransparency",
+		},
+		Parent = Overlay.layer("Widgets"),
+	}, {
+		Util.corner(10),
+		Util.stroke(),
+		Util.padding(8, 10, 10, 10),
+		Util.list(6),
+	})
+	maid:Give(frame)
+
+	local header = Util.create("TextButton", {
+		Name = "Header",
+		Size = UDim2.new(1, 0, 0, 18),
+		LayoutOrder = 1,
+		Parent = frame,
+	})
+	local title = Util.create("TextLabel", {
+		Name = "Title",
+		Size = UDim2.new(1, -22, 1, 0),
+		Text = headerText(element),
+		FontFace = Util.Fonts.SemiBold,
+		TextSize = 12,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "TextDim" },
+		Parent = header,
+	})
+	local close = Util.create("TextButton", {
+		Name = "Unpin",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.fromScale(1, 0.5),
+		Size = UDim2.fromOffset(18, 18),
+		Parent = header,
+	})
+	local closeGlyph = Util.glyph("close", { Size = 9, Color = "TextMuted", Thickness = 1.5 })
+	closeGlyph.AnchorPoint = Vector2.new(0.5, 0.5)
+	closeGlyph.Position = UDim2.fromScale(0.5, 0.5)
+	closeGlyph.Parent = close
+
+	local content = Util.create("Frame", {
+		Name = "Content",
+		Size = UDim2.fromScale(1, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = 2,
+		Parent = frame,
+	})
+
+	local widget = {
+		Element = element,
+		Frame = frame,
+		Content = content,
+		Maid = maid,
+	}
+	local update = builders[element.Type](widget, element)
+	widget.Update = update
+	update(true)
+
+	maid:Give(element.Changed:Connect(function()
+		update(false)
+	end))
+	maid:Give(close.Activated:Connect(function()
+		self:Unpin(element)
+	end))
+
+	-- Drag by the header; remember where it was left.
+	local origin
+	Util.draggable(header, {
+		Start = function()
+			origin = Vector2.new(frame.Position.X.Offset, frame.Position.Y.Offset)
+		end,
+		Move = function(delta)
+			local size = frame.AbsoluteSize
+			local nx, ny = clampToScreen(origin.X + delta.X, origin.Y + delta.Y, size.X, size.Y)
+			Spring.animate(frame, "Drag", { Position = UDim2.fromOffset(nx, ny) })
+			self._saved[id] = { X = nx, Y = ny }
+		end,
+		End = function()
+			self.Changed:Fire()
+		end,
+	}, maid)
+
+	local scale = Util.create("UIScale", { Scale = 0.85, Parent = frame })
+	Spring.animate(scale, "Bouncy", { Scale = 1 })
+
+	self.Widgets[id] = widget
+	self._saved[id] = { X = x, Y = y }
+	widget.Title = title
+	if not silent then
+		self.Changed:Fire()
+	end
+	return widget
+end
+
+-- Removes a widget. keepSaved = true keeps it in the saved layout (used when
+-- an element is destroyed by an unload, so it comes back next time).
+function Pins:Unpin(element, keepSaved)
+	local id = type(element) == "table" and element:GetId() or element
+	local widget = self.Widgets[id]
+	if widget then
+		self.Widgets[id] = nil
+		local frame = widget.Frame
+		Spring.animate(frame.UIScale, "Snappy", { Scale = 0.85 }, function()
+			widget.Maid:Clean()
+		end)
+		Spring.animate(frame, "Snappy", { BackgroundTransparency = 1 })
+		for _, part in ipairs(frame:GetDescendants()) do
+			if part:IsA("GuiObject") then
+				part.Visible = false
+			end
+		end
+	end
+	if not keepSaved then
+		self._saved[id] = nil
+		self.Changed:Fire()
+	end
+end
+
+function Pins:_elementText(element)
+	local widget = self.Widgets[element:GetId()]
+	if widget then
+		widget.Title.Text = headerText(element)
+		widget.Update(false)
+	end
+end
+
+-- Restores a saved pin once its element exists.
+function Pins:_elementReady(element)
+	local saved = self._saved[element:GetId()]
+	if saved and not self.Widgets[element:GetId()] then
+		self:Pin(element, Vector2.new(saved.X, saved.Y), true)
+	end
+end
+
+function Pins:Serialize()
+	local list = {}
+	for id, position in pairs(self._saved) do
+		table.insert(list, { Id = id, X = math.floor(position.X), Y = math.floor(position.Y) })
+	end
+	return list
+end
+
+function Pins:Load(list)
+	if type(list) ~= "table" then
+		return
+	end
+	for _, entry in ipairs(list) do
+		if type(entry) == "table" and type(entry.Id) == "string" and tonumber(entry.X) and tonumber(entry.Y) then
+			self._saved[entry.Id] = { X = tonumber(entry.X), Y = tonumber(entry.Y) }
+		end
+	end
+	for _, element in ipairs(self.Window.Elements) do
+		self:_elementReady(element)
+	end
+end
+
+---------------------------------------------------------------------------
+-- Drag an element out of the window to pin it
+---------------------------------------------------------------------------
+
+function Pins:BeginDrag(element, pointer)
+	self:_endGhost()
+	local ghost = Util.create("Frame", {
+		Name = "PinGhost",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(pointer.X, pointer.Y),
+		Size = UDim2.fromOffset(190, 40),
+		BackgroundTransparency = 0.08,
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = Overlay.layer("Tooltip"),
+	}, {
+		Util.corner(10),
+		Util.stroke(),
+	})
+	local icon = Util.icon("pin", 14, "Accent")
+	icon.AnchorPoint = Vector2.new(0, 0.5)
+	icon.Position = UDim2.new(0, 12, 0.5, 0)
+	icon.Parent = ghost
+	Util.create("TextLabel", {
+		Name = "Name",
+		Position = UDim2.fromOffset(34, 4),
+		Size = UDim2.new(1, -44, 0, 16),
+		Text = element.Name,
+		FontFace = Util.Fonts.SemiBold,
+		TextSize = 13,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "Text" },
+		Parent = ghost,
+	})
+	self._ghostHint = Util.create("TextLabel", {
+		Name = "Hint",
+		Position = UDim2.fromOffset(34, 20),
+		Size = UDim2.new(1, -44, 0, 14),
+		Text = "Drop outside the window to pin",
+		TextSize = 11,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "TextMuted" },
+		Parent = ghost,
+	})
+	local scale = Util.create("UIScale", { Scale = 0.8, Parent = ghost })
+	Spring.animate(scale, "Bouncy", { Scale = 1 })
+	self._ghost = ghost
+	self._ghostReady = false
+	self:UpdateDrag(element, pointer)
+end
+
+function Pins:_outsideWindow(pointer)
+	local root = self.Window._root
+	local position, size = root.AbsolutePosition, root.AbsoluteSize
+	return not self.Window.Visible
+		or pointer.X < position.X
+		or pointer.Y < position.Y
+		or pointer.X > position.X + size.X
+		or pointer.Y > position.Y + size.Y
+end
+
+function Pins:UpdateDrag(_element, pointer)
+	local ghost = self._ghost
+	if not ghost then
+		return
+	end
+	Spring.animate(ghost, "Drag", { Position = UDim2.fromOffset(pointer.X, pointer.Y) })
+	local ready = self:_outsideWindow(pointer)
+	if ready ~= self._ghostReady then
+		self._ghostReady = ready
+		local stroke = ghost:FindFirstChildOfClass("UIStroke")
+		if stroke then
+			Theme.animate(stroke, {
+				Color = ready and "Accent" or "Stroke",
+				Transparency = ready and 0.2 or "StrokeTransparency",
+			})
+		end
+		self._ghostHint.Text = ready and "Release to pin here" or "Drop outside the window to pin"
+	end
+end
+
+function Pins:EndDrag(element, pointer)
+	local ready = self._ghost and self:_outsideWindow(pointer)
+	self:_endGhost()
+	if ready then
+		self:Pin(element, Vector2.new(pointer.X - WIDTH / 2, pointer.Y - 16))
+	end
+end
+
+function Pins:_endGhost()
+	local ghost = self._ghost
+	if not ghost then
+		return
+	end
+	self._ghost = nil
+	local scale = ghost:FindFirstChildOfClass("UIScale")
+	if scale then
+		Spring.animate(scale, "Snappy", { Scale = 0.8 })
+	end
+	Spring.animate(ghost, "Snappy", { BackgroundTransparency = 1 }, function()
+		ghost:Destroy()
+	end)
+	for _, part in ipairs(ghost:GetDescendants()) do
+		if part:IsA("GuiObject") then
+			part.Visible = false
+		end
+	end
+end
+
+function Pins:Destroy()
+	self:_endGhost()
+	for id in pairs(table.clone(self.Widgets)) do
+		local widget = self.Widgets[id]
+		self.Widgets[id] = nil
+		widget.Maid:Clean()
+	end
+	self.Changed:DisconnectAll()
+end
+
+return Pins
+end
+
+-- ======================================================================
+-- Features/Settings
+__modules["Features/Settings"] = function()
+-- Aether · Features/Settings
+--   Window:SettingsTab()   adds a ready-made tab with:
+--     Interface: theme, toggle key, reduced motion
+--     Configs:   save, load, delete, autoload
+--     Share:     copy / paste config codes and theme codes
+--     Session:   version info and unload
+-- Everything here uses Save = false, so it never ends up inside configs.
+
+local Env = import("Core/Env")
+local Theme = import("Core/Theme")
+local Config = import("Features/Config")
+
+local Settings = {}
+
+function Settings.build(window, options)
+	options = options or {}
+	local library = window.Library
+	local config = window.Config
+
+	local tab = window:Tab({ Name = options.Name or "Settings", Icon = options.Icon or "settings" })
+
+	---------------------------------------------------------------------------
+	tab:Section("Interface")
+
+	local themeDropdown = tab:Dropdown({
+		Name = "Theme",
+		Options = Theme.names(),
+		Default = Theme.Name,
+		Placeholder = "Custom",
+		Save = false,
+		Callback = function(name)
+			if name and name ~= Theme.Name then
+				library:SetTheme(name)
+				window:_savePrefs(true)
+			end
+		end,
+	})
+	window.Maid:Give(Theme.Changed:Connect(function(name)
+		-- Custom themes (from codes) aren't in the list: show the "Custom" placeholder.
+		themeDropdown:Set(Theme.Presets[name] and name or nil, true)
+	end))
+
+	tab:Keybind({
+		Name = "Show / hide interface",
+		Default = window:GetToggleKey(),
+		Save = false,
+		OnBindChanged = function(key)
+			if key then
+				window:SetToggleKey(key)
+				window:_savePrefs()
+			end
+		end,
+	})
+
+	tab:Toggle({
+		Name = "Reduced motion",
+		Description = "Turns animations off",
+		Default = library.ReducedMotion == true,
+		Save = false,
+		Callback = function(on)
+			library:SetReducedMotion(on)
+			window:_savePrefs()
+		end,
+	})
+
+	---------------------------------------------------------------------------
+	tab:Section("Configs")
+
+	local nameInput = tab:Input({
+		Name = "Config name",
+		Placeholder = "e.g. Legit",
+		Save = false,
+	})
+
+	local list = tab:Dropdown({
+		Name = "Saved configs",
+		Options = config:List(),
+		Placeholder = "None yet",
+		Save = false,
+	})
+
+	local autoloadLabel = tab:Label("Autoload: none")
+
+	local function refresh()
+		list:SetOptions(config:List())
+		autoloadLabel:SetText("Autoload: " .. (config:GetAutoload() or "none"))
+	end
+	refresh()
+
+	local function selected()
+		return list.Value
+	end
+
+	tab:Button({
+		Name = "Save config",
+		Description = "Saves every setting under the name above",
+		Callback = function()
+			local name = Config.sanitize(nameInput.Value ~= "" and nameInput.Value or (selected() or ""))
+			local ok, err = config:Save(name)
+			if ok then
+				refresh()
+				list:Set(name, true)
+				nameInput:Set("", true)
+				window:Notify({ Title = "Config saved", Content = ("'%s' is saved."):format(name), Type = "Success" })
+			else
+				window:Notify({ Title = "Couldn't save", Content = err, Type = "Error" })
+			end
+		end,
+	})
+
+	tab:Button({
+		Name = "Load config",
+		Callback = function()
+			local name = selected()
+			local ok, result = config:Load(name or "")
+			if ok then
+				window:Notify({ Title = "Config loaded", Content = ("'%s' applied %d settings."):format(name, result), Type = "Success" })
+			else
+				window:Notify({ Title = "Couldn't load", Content = result, Type = "Error" })
+			end
+		end,
+	})
+
+	tab:Button({
+		Name = "Load on startup",
+		Description = "Loads the selected config every time the script runs",
+		Callback = function()
+			local name = selected()
+			if not name then
+				window:Notify({ Title = "Pick a config first", Type = "Warning" })
+				return
+			end
+			config:SetAutoload(name)
+			refresh()
+			window:Notify({ Title = "Autoload set", Content = ("'%s' will load on startup."):format(name), Type = "Success" })
+		end,
+	})
+
+	tab:Button({
+		Name = "Delete config",
+		Callback = function()
+			local name = selected()
+			if not name then
+				window:Notify({ Title = "Pick a config first", Type = "Warning" })
+				return
+			end
+			window:Dialog({
+				Title = ("Delete '%s'?"):format(name),
+				Content = "This can't be undone.",
+				Buttons = {
+					{ Name = "Cancel" },
+					{ Name = "Delete", Danger = true, Callback = function()
+						config:Delete(name)
+						refresh()
+						window:Notify({ Title = "Config deleted", Content = ("'%s' was removed."):format(name) })
+					end },
+				},
+			})
+		end,
+	})
+
+	---------------------------------------------------------------------------
+	tab:Section("Share")
+
+	local codeInput
+	tab:Button({
+		Name = "Copy config code",
+		Description = "Your settings as one line of text anyone can paste",
+		Callback = function()
+			window:_copyShareCode(codeInput)
+		end,
+	})
+
+	codeInput = tab:Input({
+		Name = "Paste config code",
+		Placeholder = "AE1:...",
+		Save = false,
+		Callback = function(text)
+			if text == "" then
+				return
+			end
+			local ok, result = config:Import(text)
+			if ok then
+				window:Notify({ Title = "Config imported", Content = ("Applied %d settings."):format(result), Type = "Success" })
+			else
+				window:Notify({ Title = "Couldn't import", Content = result, Type = "Error" })
+			end
+			codeInput:Set("", true)
+		end,
+	})
+
+	local themeInput
+	tab:Button({
+		Name = "Copy theme code",
+		Callback = function()
+			local code = library:ExportTheme()
+			if Env.copy(code) then
+				window:Notify({ Title = "Theme code copied", Type = "Success" })
+			else
+				themeInput:Set(code, true)
+				window:Notify({ Title = "Copy the code below", Content = "Your executor can't copy to the clipboard.", Type = "Warning" })
+			end
+		end,
+	})
+
+	themeInput = tab:Input({
+		Name = "Paste theme code",
+		Placeholder = "AT1:...",
+		Save = false,
+		Callback = function(text)
+			if text == "" then
+				return
+			end
+			local ok, err = library:ImportTheme(text)
+			if ok then
+				window:_savePrefs(true)
+				window:Notify({ Title = "Theme applied", Type = "Success" })
+			else
+				window:Notify({ Title = "Couldn't apply theme", Content = err, Type = "Error" })
+			end
+			themeInput:Set("", true)
+		end,
+	})
+
+	---------------------------------------------------------------------------
+	tab:Section("Session")
+
+	tab:Paragraph({
+		Title = "Aether " .. tostring(library.Version),
+		Content = ("Executor: %s  ·  Saving: %s"):format(
+			Env.Executor,
+			Env.CanSaveFiles and "to files" or "this session only"
+		),
+	})
+
+	tab:Button({
+		Name = "Unload interface",
+		Description = "Removes every window and widget",
+		Callback = function()
+			window:Dialog({
+				Title = "Unload the interface?",
+				Content = "Every window and widget is removed. Run the script again to bring it back.",
+				Buttons = {
+					{ Name = "Cancel" },
+					{ Name = "Unload", Danger = true, Callback = function()
+						library:Unload()
+					end },
+				},
+			})
+		end,
+	})
+
+	return tab
+end
+
+return Settings
+end
+
+-- ======================================================================
+-- Features/Tooltip
+__modules["Features/Tooltip"] = function()
+-- Aether · Features/Tooltip
+-- One shared tooltip that follows the mouse. Shown after a short hover on
+-- elements that have :Tooltip("text") (or a disabled reason). Desktop only.
+
+local Env = import("Core/Env")
+local Util = import("Core/Util")
+local Spring = import("Core/Spring")
+local Overlay = import("Features/Overlay")
+
+local UserInputService = Env.service("UserInputService")
+
+local Tooltip = {}
+
+local DELAY = 0.45
+
+local frame, label, owner, follow = nil, nil, nil, nil
+local token = 0
+
+local function ensure()
+	if frame and frame.Parent then
+		return
+	end
+	frame = Util.create("Frame", {
+		Name = "Tooltip",
+		Size = UDim2.fromOffset(0, 0),
+		AutomaticSize = Enum.AutomaticSize.XY,
+		Visible = false,
+		Theme = { BackgroundColor3 = "Background" },
+		Parent = Overlay.layer("Tooltip"),
+	}, {
+		Util.corner(6),
+		Util.stroke(),
+		Util.padding(6, 9, 6, 9),
+	})
+	label = Util.create("TextLabel", {
+		Name = "Text",
+		Size = UDim2.fromOffset(0, 0),
+		AutomaticSize = Enum.AutomaticSize.XY,
+		TextSize = 12,
+		TextWrapped = true,
+		Theme = { TextColor3 = "Text" },
+		Parent = frame,
+	}, {
+		Util.create("UISizeConstraint", { MaxSize = Vector2.new(260, 400) }),
+	})
+end
+
+local function place()
+	if not frame then
+		return
+	end
+	local mouse = UserInputService:GetMouseLocation()
+	local screen = Overlay.size()
+	local size = frame.AbsoluteSize
+	local x = math.clamp(mouse.X + 14, 8, math.max(8, screen.X - size.X - 8))
+	local y = mouse.Y + 20
+	if y + size.Y > screen.Y - 8 then
+		y = mouse.Y - size.Y - 10
+	end
+	frame.Position = UDim2.fromOffset(x, y)
+end
+
+-- Shows getText() near the mouse after a short delay, unless hidden first.
+function Tooltip.schedule(newOwner, getText)
+	if Util.isTouch() then
+		return
+	end
+	token += 1
+	local myToken = token
+	owner = newOwner
+	task.delay(DELAY, function()
+		if token ~= myToken or owner ~= newOwner then
+			return
+		end
+		local text = getText()
+		if text == nil or text == "" then
+			return
+		end
+		ensure()
+		label.Text = tostring(text)
+		frame.Visible = true
+		frame.BackgroundTransparency = 0.3
+		Spring.animate(frame, "Quick", { BackgroundTransparency = 0 })
+		place()
+		if follow then
+			follow:Disconnect()
+		end
+		follow = UserInputService.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement then
+				place()
+			end
+		end)
+	end)
+end
+
+function Tooltip.hide(target)
+	if target ~= nil and target ~= owner then
+		return
+	end
+	token += 1
+	owner = nil
+	if frame then
+		frame.Visible = false
+	end
+	if follow then
+		follow:Disconnect()
+		follow = nil
+	end
+end
+
+function Tooltip.destroy()
+	Tooltip.hide()
+	if frame then
+		frame:Destroy()
+		frame = nil
+	end
+end
+
+return Tooltip
+end
+
+-- ======================================================================
 -- init
 __modules["init"] = function()
 -- Aether UI Library · entry point
@@ -3876,7 +10314,8 @@ __modules["init"] = function()
 --   local Aether = loadstring(game:HttpGet(url))()
 --   local Window = Aether:Window({ Name = "My Script", Subtitle = "v1.0" })
 --   local Main = Window:Tab({ Name = "Main", Icon = "home" })
---   Main:Button("Hello", { Callback = function() print("hi") end })
+--   Main:Toggle({ Name = "Fly", Keybind = "F", Callback = function(on) end })
+--   Window:SettingsTab()
 
 local Env = import("Core/Env")
 local Log = import("Core/Log")
@@ -3886,13 +10325,31 @@ local Theme = import("Core/Theme")
 local Icons = import("Core/Icons")
 local Util = import("Core/Util")
 local State = import("Core/State")
+local Base64 = import("Core/Base64")
 local Elements = import("Components/Elements")
+local Element = import("Components/Element")
 local Window = import("Components/Window")
+local Config = import("Features/Config")
+local Overlay = import("Features/Overlay")
+local Notifications = import("Features/Notifications")
+local Tooltip = import("Features/Tooltip")
+local ContextMenu = import("Features/ContextMenu")
+local KeySystem = import("Features/KeySystem")
+local Compat = import("Features/Compat")
 
 -- Built-in elements register themselves when loaded.
 import("Elements/Label")
 import("Elements/Paragraph")
 import("Elements/Button")
+import("Elements/Toggle")
+import("Elements/Slider")
+import("Elements/Dropdown")
+import("Elements/Input")
+import("Elements/Keybind")
+import("Elements/ColorPicker")
+import("Elements/Divider")
+
+local THEME_PREFIX = "AT1:"
 
 local Aether = {
 	Version = "0.1.0",
@@ -3901,8 +10358,10 @@ local Aether = {
 	Windows = {},
 	Unloaded = Signal.new("Aether.Unloaded"),
 	IsUnloaded = false,
+	ReducedMotion = false,
 
 	-- Advanced: the building blocks, for custom elements and effects.
+	Element = Element,
 	Env = Env,
 	Log = Log,
 	Spring = Spring,
@@ -3912,16 +10371,58 @@ local Aether = {
 }
 
 function Aether:Window(first, second)
-	local window = Window.new(self, Util.options(first, second))
+	local options = Compat.windowOptions(Util.options(first, second))
+
+	-- Rayfield-style KeySystem = true + KeySettings: ask for the key first.
+	local keyOptions = Compat.keySystem(options)
+	if keyOptions and not self:KeySystem(keyOptions) then
+		-- No valid key: remove everything and stop the calling script quietly.
+		self:Unload()
+		coroutine.yield()
+	end
+
+	local window = Window.new(self, options)
 	table.insert(self.Windows, window)
 	return window
 end
 
 Aether.CreateWindow = Aether.Window
 
+-- Rayfield compatibility: restores the ConfigurationSaving / AutoSave config.
+function Aether:LoadConfiguration()
+	for _, window in ipairs(self.Windows) do
+		window:_loadAutoSave()
+	end
+end
+
+function Aether:SetVisibility(visible)
+	for _, window in ipairs(self.Windows) do
+		window:SetVisible(visible)
+	end
+end
+
+function Aether:IsVisible()
+	local window = self.Windows[1]
+	return window ~= nil and window.Visible
+end
+
+-- Aether:Notify({ Title = "Done", Content = "...", Type = "Success", Duration = 4 })
+function Aether:Notify(options)
+	return Notifications.notify(options)
+end
+
+-- Yields until a valid key is entered. See Features/KeySystem.
+function Aether:KeySystem(options)
+	return KeySystem.prompt(self, options)
+end
+
+---------------------------------------------------------------------------
+-- Themes
+---------------------------------------------------------------------------
+
 -- Aether:SetTheme("Ocean") or Aether:SetTheme({ Accent = Color3.fromRGB(255, 120, 80) })
 function Aether:SetTheme(theme)
-	Theme.set(theme, true)
+	Theme.set(Compat.themeName(theme), true)
 	return self
 end
 
@@ -3934,30 +10435,55 @@ function Aether:RegisterTheme(name, theme)
 	return self
 end
 
+-- The current theme as a short code others can paste into ImportTheme.
+function Aether:ExportTheme()
+	return THEME_PREFIX .. Base64.encode(Config.encode(Theme.serialize()) or "{}")
+end
+
+function Aether:ImportTheme(code)
+	code = string.gsub(tostring(code or ""), "%s", "")
+	if string.sub(code, 1, #THEME_PREFIX) ~= THEME_PREFIX then
+		return false, "That isn't an Aether theme code"
+	end
+	local json = Base64.decode(string.sub(code, #THEME_PREFIX + 1))
+	local data = json and Config.decode(json)
+	if not data or not Theme.deserialize(data, true) then
+		return false, "The code is incomplete or damaged"
+	end
+	return true
+end
+
+---------------------------------------------------------------------------
+-- Misc
+---------------------------------------------------------------------------
+
 -- Adds a custom element type: every tab and section gets a :<name>() method.
 function Aether:RegisterElement(name, class)
 	Elements.register(name, class)
 	return self
 end
 
-Aether.Element = import("Components/Element")
-
 -- Turns every animation off (accessibility / low-end devices).
 function Aether:SetReducedMotion(enabled)
-	Spring.Instant = enabled == true
+	self.ReducedMotion = enabled == true
+	Spring.Instant = self.ReducedMotion
 	return self
 end
 
--- Removes every window and disconnects everything Aether created.
+-- Removes every window, widget and notification, and disconnects everything.
 function Aether:Unload()
 	if self.IsUnloaded then
 		return
 	end
 	self.IsUnloaded = true
+	ContextMenu.close()
+	Tooltip.destroy()
 	for _, window in ipairs(table.clone(self.Windows)) do
 		window:Destroy()
 	end
 	table.clear(self.Windows)
+	Notifications.clear()
+	Overlay.destroy()
 	Spring.stopAll()
 	Theme.clear()
 	self.Unloaded:Fire()
