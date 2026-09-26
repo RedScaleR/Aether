@@ -1,0 +1,1270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aether UI Docs</title>
+<meta name="description" content="Documentation for Aether, a Roblox UI library: windows, tabs, elements, themes, configs, notifications and more.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0d0d16;
+  --bg-2: #13131f;
+  --panel: rgba(255,255,255,0.035);
+  --panel-2: rgba(255,255,255,0.06);
+  --stroke: rgba(255,255,255,0.09);
+  --text: #f4f4f8;
+  --text-dim: #a6a6ba;
+  --text-muted: #6f6f86;
+  --accent: #8b5cf6;
+  --accent-2: #3b82f6;
+  --accent-soft: rgba(139,92,246,0.14);
+  --code-bg: #0a0a12;
+  --tok-kw: #c4a5ff;
+  --tok-str: #86efac;
+  --tok-num: #fbbf24;
+  --tok-com: #6f6f86;
+  --tok-fn: #7dd3fc;
+  --tok-const: #f472b6;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #f43f5e;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f5f5fa;
+  --bg-2: #ffffff;
+  --panel: rgba(0,0,0,0.025);
+  --panel-2: rgba(0,0,0,0.05);
+  --stroke: rgba(0,0,0,0.09);
+  --text: #15151d;
+  --text-dim: #565669;
+  --text-muted: #8c8c9e;
+  --accent: #7c3aed;
+  --accent-2: #2563eb;
+  --accent-soft: rgba(124,58,237,0.1);
+  --code-bg: #16161f;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 76px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.65 Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; }
+:not(pre) > code {
+  background: var(--panel-2);
+  border: 1px solid var(--stroke);
+  border-radius: 5px;
+  padding: 0.1em 0.38em;
+  font-size: 0.86em;
+}
+
+/* Top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 12px;
+  height: 60px; padding: 0 20px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--stroke);
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; color: var(--text); }
+.brand:hover { text-decoration: none; }
+.logo {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  display: grid; place-items: center; color: #fff; font-size: 15px;
+  box-shadow: 0 4px 18px rgba(139,92,246,0.45);
+}
+.version { font-size: 12px; font-weight: 500; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--stroke); padding: 1px 8px; border-radius: 99px; }
+.spacer { flex: 1; }
+.icon-btn {
+  display: inline-grid; place-items: center;
+  width: 36px; height: 36px; border-radius: 9px;
+  background: var(--panel); border: 1px solid var(--stroke);
+  color: var(--text-dim); cursor: pointer; font-size: 16px;
+}
+.icon-btn:hover { color: var(--text); background: var(--panel-2); }
+.menu-btn { display: none; }
+
+/* Layout */
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
+.sidebar {
+  position: sticky; top: 60px; height: calc(100vh - 60px); overflow-y: auto;
+  padding: 20px 14px 40px; border-right: 1px solid var(--stroke);
+}
+.search {
+  width: 100%; padding: 9px 12px; margin-bottom: 14px;
+  border-radius: 9px; border: 1px solid var(--stroke);
+  background: var(--panel); color: var(--text); font: inherit; font-size: 14px;
+  outline: none;
+}
+.search:focus { border-color: var(--accent); }
+.nav-group { margin-bottom: 16px; }
+.nav-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); padding: 0 10px 6px; }
+.nav a {
+  display: block; padding: 5px 10px; border-radius: 7px;
+  color: var(--text-dim); font-size: 14px;
+}
+.nav a:hover { background: var(--panel-2); color: var(--text); text-decoration: none; }
+.nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+main { padding: 36px 48px 120px; min-width: 0; }
+section { margin-bottom: 64px; }
+h1 { font-size: 40px; line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.02em; }
+h2 { font-size: 26px; margin: 0 0 8px; letter-spacing: -0.01em; padding-top: 8px; }
+h3 { font-size: 18px; margin: 32px 0 8px; }
+h4 { font-size: 15px; margin: 24px 0 6px; color: var(--text-dim); }
+p { margin: 0 0 14px; }
+.lead { font-size: 17px; color: var(--text-dim); max-width: 680px; }
+.grad { background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero { padding: 24px 0 8px; }
+.pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 26px; }
+.pill { font-size: 13px; padding: 4px 11px; border-radius: 99px; background: var(--panel); border: 1px solid var(--stroke); color: var(--text-dim); }
+
+/* Code */
+.code {
+  position: relative; margin: 12px 0 20px;
+  background: var(--code-bg); border: 1px solid var(--stroke); border-radius: 12px; overflow: hidden;
+}
+.code-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 12px; color: #8c8ca3; }
+.code pre { margin: 0; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.6; color: #e6e6ef; }
+.copy {
+  font: inherit; font-size: 12px; color: #a6a6ba; cursor: pointer;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+  padding: 3px 10px; border-radius: 6px;
+}
+.copy:hover { color: #fff; }
+.tk { color: var(--tok-kw); }
+.ts { color: var(--tok-str); }
+.tn { color: var(--tok-num); }
+.tc { color: var(--tok-com); font-style: italic; }
+.tf { color: var(--tok-fn); }
+.tb { color: var(--tok-const); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; margin: 10px 0 22px; border: 1px solid var(--stroke); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--stroke); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); background: var(--panel); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; }
+td code { white-space: nowrap; }
+.type { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
+
+/* Callouts & cards */
+.note {
+  border: 1px solid var(--stroke); border-left: 3px solid var(--accent);
+  background: var(--accent-soft); border-radius: 10px;
+  padding: 12px 16px; margin: 14px 0 20px; font-size: 14px;
+}
+.note.warn { border-left-color: var(--warning); background: rgba(245,158,11,0.08); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin: 16px 0 24px; }
+.card { background: var(--panel); border: 1px solid var(--stroke); border-radius: 12px; padding: 14px 16px; }
+.card b { display: block; margin-bottom: 4px; }
+.card span { color: var(--text-dim); font-size: 13.5px; }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 22px; }
+.swatch { display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border-radius: 99px; background: var(--panel); border: 1px solid var(--stroke); font-size: 13px; }
+.swatch i { width: 22px; height: 22px; border-radius: 50%; display: block; }
+.method { font-family: "JetBrains Mono", monospace; font-size: 13.5px; }
+.hidden-by-search { display: none !important; }
+footer { color: var(--text-muted); font-size: 13px; border-top: 1px solid var(--stroke); padding-top: 24px; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .menu-btn { display: inline-grid; }
+  .sidebar {
+    position: fixed; top: 60px; left: 0; z-index: 15; width: 280px; max-width: 85vw;
+    background: var(--bg-2); transform: translateX(-100%); transition: transform .22s ease;
+  }
+  .sidebar.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+  main { padding: 24px 16px 100px; }
+  h1 { font-size: 30px; }
+  h2 { font-size: 22px; }
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="icon-btn menu-btn" id="menuBtn" aria-label="Toggle navigation">☰</button>
+  <a class="brand" href="#top"><span class="logo">✦</span> Aether <span class="version">v0.1.0</span></a>
+  <div class="spacer"></div>
+  <a class="icon-btn" href="https://github.com/RedScaleR/Aether" title="GitHub" aria-label="GitHub">
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+  </a>
+  <button class="icon-btn" id="themeBtn" aria-label="Toggle light / dark">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg>
+  </button>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <input class="search" id="search" type="search" placeholder="Search docs…" autocomplete="off">
+    <nav class="nav" id="nav">
+      <div class="nav-group">
+        <div class="nav-title">Getting started</div>
+        <a href="#intro">Introduction</a>
+        <a href="#install">Installation</a>
+        <a href="#quickstart">Full example</a>
+        <a href="#options-style">Calling styles</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">Structure</div>
+        <a href="#window">Window</a>
+        <a href="#tab">Tab</a>
+        <a href="#section">Section</a>
+        <a href="#element">Common element API</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">Elements</div>
+        <a href="#button">Button</a>
+        <a href="#toggle">Toggle</a>
+        <a href="#slider">Slider</a>
+        <a href="#dropdown">Dropdown</a>
+        <a href="#input">Input</a>
+        <a href="#keybind">Keybind</a>
+        <a href="#colorpicker">ColorPicker</a>
+        <a href="#label">Label</a>
+        <a href="#paragraph">Paragraph</a>
+        <a href="#divider">Divider</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">Features</div>
+        <a href="#notifications">Notifications</a>
+        <a href="#dialogs">Dialogs</a>
+        <a href="#keysystem">Key system</a>
+        <a href="#flags">Flags</a>
+        <a href="#configs">Configs</a>
+        <a href="#settings">Settings tab</a>
+        <a href="#themes">Themes</a>
+        <a href="#palette">Command palette</a>
+        <a href="#pins">Pinned widgets</a>
+        <a href="#icons">Icons</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">Advanced</div>
+        <a href="#library">Library API</a>
+        <a href="#custom">Custom elements</a>
+        <a href="#rayfield">Rayfield compatibility</a>
+      </div>
+    </nav>
+  </aside>
+
+  <main id="top">
+
+<!-- ================================================================ INTRO -->
+<section id="intro" class="hero">
+  <h1>Build beautiful script UIs with <span class="grad">Aether</span></h1>
+  <p class="lead">A frosted-glass Roblox UI library with springy animations, a command palette, pinnable widgets, configs, themes and a drop-in Rayfield compatibility layer. Readable source, no telemetry: Aether never makes network requests on its own.</p>
+  <div class="pills">
+    <span class="pill">10 built-in elements</span>
+    <span class="pill">7 themes</span>
+    <span class="pill">Configs &amp; share codes</span>
+    <span class="pill">Ctrl + K palette</span>
+    <span class="pill">Touch friendly</span>
+    <span class="pill">Rayfield compatible</span>
+  </div>
+  <div class="cards">
+    <div class="card"><b>Chainable</b><span>Every method returns itself, so you can write <code>Tab:Button("Hi"):OnClick(fn)</code>.</span></div>
+    <div class="card"><b>Auto-saving</b><span>Every value is saved automatically, keyed by its flag or by Tab/Section/Name.</span></div>
+    <div class="card"><b>Pin anything</b><span>Drag an element out of the window to get a floating widget that stays in sync.</span></div>
+    <div class="card"><b>Accessible</b><span>Reduced motion mode, keyboard toggle key and fit-to-screen scaling.</span></div>
+  </div>
+</section>
+
+<!-- ================================================================ INSTALL -->
+<section id="install">
+  <h2>Installation</h2>
+  <p>Load the library with <code>loadstring</code> in your executor, then create a window.</p>
+<div class="code"><pre>local Aether = loadstring(game:HttpGet("https://raw.githubusercontent.com/RedScaleR/Aether/main/Aether.lua"))()
+
+local Window = Aether:Window({ Name = "My Script", Subtitle = "v1.0" })</pre></div>
+  <p>That's all you need. The window shows itself automatically once your tabs are in place. Press <code>RightControl</code> to hide or show it.</p>
+</section>
+
+<!-- ================================================================ QUICKSTART -->
+<section id="quickstart">
+  <h2>Full example</h2>
+  <p>A complete script using most of the library. Copy it, paste it into your executor, and start tweaking.</p>
+<div class="code"><pre>local Aether = loadstring(game:HttpGet("https://raw.githubusercontent.com/RedScaleR/Aether/main/Aether.lua"))()
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local function humanoid()
+    local character = LocalPlayer.Character
+    return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local Window = Aether:Window({
+    Name = "Aether Hub",
+    Subtitle = "v1.0",
+    Icon = "sparkles",
+    Theme = "Aether",
+    ToggleKey = "RightControl",
+})
+
+---------------------------------------------------------------- Player tab
+local Player = Window:Tab({ Name = "Player", Icon = "user" })
+
+Player:Section("Movement")
+
+Player:Slider({
+    Name = "WalkSpeed",
+    Min = 16, Max = 200, Default = 16, Increment = 1,
+    Suffix = " studs",
+    Flag = "WalkSpeed",
+    Callback = function(value)
+        local h = humanoid()
+        if h then h.WalkSpeed = value end
+    end,
+})
+
+Player:Slider({
+    Name = "JumpPower",
+    Min = 50, Max = 300, Default = 50,
+    Flag = "JumpPower",
+    Callback = function(value)
+        local h = humanoid()
+        if h then h.JumpPower = value end
+    end,
+})
+
+Player:Toggle({
+    Name = "Infinite Jump",
+    Description = "Jump again while in the air",
+    Keybind = "J",
+    Flag = "InfJump",
+})
+
+game:GetService("UserInputService").JumpRequest:Connect(function()
+    if Aether.Flags.InfJump then
+        local h = humanoid()
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+Player:Section("Server")
+
+Player:Button("Rejoin")
+    :Description("Reconnects to this server")
+    :OnClick(function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
+    end)
+
+---------------------------------------------------------------- Visuals tab
+local Visuals = Window:Tab({ Name = "Visuals", Icon = "eye" })
+
+Visuals:Toggle({ Name = "ESP", Flag = "ESP" })
+
+Visuals:ColorPicker({
+    Name = "ESP color",
+    Default = Color3.fromRGB(139, 92, 246),
+    Flag = "ESPColor",
+})
+
+Visuals:Dropdown({
+    Name = "ESP mode",
+    Options = { "Box", "Highlight", "Name only" },
+    Default = "Highlight",
+    Flag = "ESPMode",
+})
+
+---------------------------------------------------------------- Misc tab
+local Misc = Window:Tab({ Name = "Misc", Icon = "settings-2" })
+
+local status = Misc:Label("Status: idle")
+
+Misc:Input({
+    Name = "Message",
+    Placeholder = "Type something...",
+    Callback = function(text)
+        status:SetText("Status: you typed " .. text)
+        Aether:Notify({ Title = "Got it", Content = text, Type = "Success" })
+    end,
+})
+
+Misc:Keybind({
+    Name = "Panic",
+    Default = "P",
+    Callback = function()
+        Aether:Unload()
+    end,
+})
+
+---------------------------------------------------------------- Built-in settings
+Window:SettingsTab()
+
+Aether:Notify({ Title = "Loaded", Content = "Press RightControl to toggle the UI.", Type = "Info" })</pre></div>
+</section>
+
+<!-- ================================================================ OPTIONS STYLE -->
+<section id="options-style">
+  <h2>Calling styles</h2>
+  <p>Every constructor (<code>Window</code>, <code>Tab</code>, <code>Section</code> and every element) accepts either an options table, a name string, or a name string followed by an options table. These three lines are equivalent:</p>
+<div class="code"><pre>Tab:Toggle({ Name = "Fly", Default = true })
+Tab:Toggle("Fly", { Default = true })
+Tab:Toggle("Fly"):Set(true)</pre></div>
+  <p>Friendly aliases from other libraries also work: <code>Title</code> is accepted for <code>Name</code>, and <code>Desc</code> for <code>Description</code>.</p>
+  <p>Every element method is also available with a <code>Create</code> prefix (<code>Tab:CreateToggle</code>, <code>Tab:CreateSlider</code>…). Those keep Rayfield's callback shapes, see <a href="#rayfield">Rayfield compatibility</a>.</p>
+</section>
+
+<!-- ================================================================ WINDOW -->
+<section id="window">
+  <h2>Window</h2>
+  <p>The main frosted-glass window with a topbar, sidebar tabs, dragging, resizing and fit-to-screen scaling. Create one with <code>Aether:Window(options)</code> (alias <code>Aether:CreateWindow</code>).</p>
+<div class="code"><pre>local Window = Aether:Window({
+    Name = "My Script",
+    Subtitle = "by me",
+    Icon = "sword",
+    Size = Vector2.new(680, 460),
+    Theme = "Midnight",
+    ToggleKey = "RightShift",
+    AutoSave = true,
+})</pre></div>
+  <h3>Options</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Option</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>Name</code></td><td class="type">string</td><td>Window title. Also names the config folder. Default <code>"Aether"</code>.</td></tr>
+    <tr><td><code>Subtitle</code></td><td class="type">string</td><td>Small text next to the title.</td></tr>
+    <tr><td><code>Icon</code></td><td class="type">string | number</td><td>Logo icon: a Lucide name, an asset id or an <code>rbxassetid://</code> string.</td></tr>
+    <tr><td><code>Size</code></td><td class="type">Vector2 | UDim2</td><td>Window size in pixels. Default 680×460 (580×340 on touch). Minimum 400×300.</td></tr>
+    <tr><td><code>Theme</code></td><td class="type">string | table</td><td>A theme name (see <a href="#themes">Themes</a>) or a table of colors.</td></tr>
+    <tr><td><code>ToggleKey</code></td><td class="type">string | KeyCode</td><td>Key that hides / shows the window. Default <code>RightControl</code>.</td></tr>
+    <tr><td><code>PaletteKey</code></td><td class="type">string | KeyCode | false</td><td>Ctrl + this key opens the command palette. Default <code>K</code>. <code>false</code> disables it.</td></tr>
+    <tr><td><code>Visible</code></td><td class="type">boolean</td><td><code>false</code> keeps the window hidden at start. Default <code>true</code>.</td></tr>
+    <tr><td><code>Resizable</code></td><td class="type">boolean</td><td><code>false</code> hides the resize grip.</td></tr>
+    <tr><td><code>Sidebar</code></td><td class="type">"Auto" | "Full" | "Compact"</td><td>Auto collapses the sidebar to icons when the window is narrow.</td></tr>
+    <tr><td><code>SidebarWidth</code></td><td class="type">number</td><td>Width of the full sidebar. Default 184 (156 on touch).</td></tr>
+    <tr><td><code>ShowUser</code></td><td class="type">boolean</td><td><code>false</code> hides the player card at the bottom of the sidebar.</td></tr>
+    <tr><td><code>OpenButton</code></td><td class="type">"Auto" | boolean</td><td>Floating button to reopen the hidden window. Auto shows it on touch devices only.</td></tr>
+    <tr><td><code>AutoSave</code></td><td class="type">boolean | string</td><td>Saves every change and restores it next run. A string names the save file.</td></tr>
+    <tr><td><code>AutoLoad</code></td><td class="type">boolean</td><td><code>false</code> skips loading the autoload config on start.</td></tr>
+    <tr><td><code>ConfigFolder</code></td><td class="type">string</td><td>Custom folder for configs. Default <code>Aether/&lt;Name&gt;</code>.</td></tr>
+    <tr><td><code>PerGame</code></td><td class="type">boolean</td><td>Keeps separate configs for each game (by PlaceId).</td></tr>
+    <tr><td><code>SavePrefs</code></td><td class="type">boolean</td><td><code>false</code> stops saving interface preferences (theme, toggle key, pins).</td></tr>
+  </table></div>
+  <h3>Methods</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td class="method">Window:Tab(options)</td><td>Adds a tab. Alias <code>CreateTab</code>.</td></tr>
+    <tr><td class="method">Window:SelectTab(tab)</td><td>Switches to a tab.</td></tr>
+    <tr><td class="method">Window:SettingsTab()</td><td>Adds the ready-made <a href="#settings">settings tab</a>.</td></tr>
+    <tr><td class="method">Window:Show() / Hide() / Toggle()</td><td>Shows, hides or toggles the window.</td></tr>
+    <tr><td class="method">Window:SetVisible(visible)</td><td>Sets visibility directly.</td></tr>
+    <tr><td class="method">Window:Minimize(state)</td><td>Collapses the window to its topbar.</td></tr>
+    <tr><td class="method">Window:SetTitle(title, subtitle)</td><td>Changes the title and subtitle.</td></tr>
+    <tr><td class="method">Window:SetToggleKey(key) / GetToggleKey()</td><td>Changes or reads the toggle key.</td></tr>
+    <tr><td class="method">Window:Notify(options)</td><td>Same as <a href="#notifications">Aether:Notify</a>.</td></tr>
+    <tr><td class="method">Window:Dialog(options)</td><td>Opens a <a href="#dialogs">dialog</a>.</td></tr>
+    <tr><td class="method">Window:OpenPalette()</td><td>Opens the <a href="#palette">command palette</a>.</td></tr>
+    <tr><td class="method">Window:Reveal(element)</td><td>Selects the element's tab, scrolls to it and flashes it.</td></tr>
+    <tr><td class="method">Window:Pin(element, position) / Unpin(element)</td><td>Pins or unpins an element as a floating widget.</td></tr>
+    <tr><td class="method">Window:SaveConfig / LoadConfig / …</td><td>See <a href="#configs">Configs</a>.</td></tr>
+    <tr><td class="method">Window:Destroy()</td><td>Removes the window.</td></tr>
+  </table></div>
+  <h3>Signals</h3>
+<div class="code"><pre>Window.VisibilityChanged:Connect(function(visible)
+    print("Window visible:", visible)
+end)
+
+Window.TabChanged:Connect(function(tab)
+    print("Now on tab:", tab.Name)
+end)</pre></div>
+</section>
+
+<!-- ================================================================ TAB -->
+<section id="tab">
+  <h2>Tab</h2>
+  <p>A sidebar entry and its scrolling page. Without an icon (or with an unknown one), the tab shows its initial in a small badge.</p>
+<div class="code"><pre>local Main = Window:Tab({ Name = "Main", Icon = "home" })
+local Combat = Window:Tab("Combat", { Icon = "sword" })
+
+Main:Button("Hello")   -- elements can be added straight onto a tab
+Combat:Select()        -- switch to this tab</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Name</code></td><td>Tab name. Default <code>"Tab N"</code>.</td></tr>
+    <tr><td><code>Icon</code></td><td>Lucide icon name or asset id.</td></tr>
+    <tr><td class="method">Tab:Section(options)</td><td>Creates a section. Alias <code>CreateSection</code>.</td></tr>
+    <tr><td class="method">Tab:Select()</td><td>Switches the window to this tab.</td></tr>
+    <tr><td class="method">Tab:SetVisible(visible)</td><td>Shows or hides the tab in the sidebar.</td></tr>
+    <tr><td class="method">Tab:Destroy()</td><td>Removes the tab and everything in it.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ SECTION -->
+<section id="section">
+  <h2>Section</h2>
+  <p>A titled card that groups elements. Elements created directly on a tab go into its most recent section, and an untitled section is made automatically if there is none.</p>
+<div class="code"><pre>local Movement = Main:Section("Movement")
+Movement:Toggle("Fly")
+Movement:Slider({ Name = "Fly speed", Min = 1, Max = 10 })
+
+-- Or keep adding to the tab: these land in the latest section.
+Main:Section("Teleports")
+Main:Button("Spawn")
+Main:Button("Shop")</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td class="method">Section:SetName(name)</td><td>Renames the section. Alias <code>Set</code>.</td></tr>
+    <tr><td class="method">Section:SetVisible(visible)</td><td>Shows or hides the whole section.</td></tr>
+    <tr><td class="method">Section:Destroy()</td><td>Removes the section and its elements.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ ELEMENT -->
+<section id="element">
+  <h2>Common element API</h2>
+  <p>Every element shares these options and methods. All methods return the element, so they can be chained.</p>
+  <h3>Shared options</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Option</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>Name</code></td><td class="type">string</td><td>Title shown on the row.</td></tr>
+    <tr><td><code>Description</code></td><td class="type">string</td><td>Smaller text under the title.</td></tr>
+    <tr><td><code>Callback</code></td><td class="type">function</td><td>Runs when the value changes (or the button is pressed).</td></tr>
+    <tr><td><code>Flag</code></td><td class="type">string</td><td>Stores the value in <code>Aether.Flags[flag]</code>. Also the config id.</td></tr>
+    <tr><td><code>Tooltip</code></td><td class="type">string</td><td>Text shown when hovering the element.</td></tr>
+    <tr><td><code>Disabled</code></td><td class="type">boolean</td><td>Starts disabled.</td></tr>
+    <tr><td><code>DisabledReason</code></td><td class="type">string</td><td>Tooltip shown while disabled.</td></tr>
+    <tr><td><code>Visible</code></td><td class="type">boolean</td><td><code>false</code> starts hidden.</td></tr>
+    <tr><td><code>Save</code></td><td class="type">boolean</td><td><code>false</code> keeps this element out of configs.</td></tr>
+  </table></div>
+  <h3>Shared methods</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td class="method">:OnChanged(fn)</td><td>Adds another change handler.</td></tr>
+    <tr><td class="method">:SetTitle(text)</td><td>Changes the title.</td></tr>
+    <tr><td class="method">:SetDescription(text)</td><td>Changes the description. Alias <code>:Description(text)</code>.</td></tr>
+    <tr><td class="method">:Tooltip(text)</td><td>Sets the hover tooltip.</td></tr>
+    <tr><td class="method">:Flag(name)</td><td>Sets or changes the flag.</td></tr>
+    <tr><td class="method">:SetVisible(visible)</td><td>Shows or hides the element.</td></tr>
+    <tr><td class="method">:SetDisabled(disabled, reason)</td><td>Greys the element out and blocks input.</td></tr>
+    <tr><td class="method">:Reset()</td><td>Goes back to the default value.</td></tr>
+    <tr><td class="method">:Pin(position) / :Unpin()</td><td>Turns the element into a floating widget (Pinnable elements).</td></tr>
+    <tr><td class="method">:Flash()</td><td>Briefly highlights the row.</td></tr>
+    <tr><td class="method">:GetId()</td><td>The flag, or <code>"Tab/Section/Name"</code>.</td></tr>
+    <tr><td class="method">:Destroy()</td><td>Removes the element.</td></tr>
+  </table></div>
+  <p>Elements also expose <code>element.Value</code> and a <code>element.Changed</code> signal.</p>
+<div class="code"><pre>local godMode = Tab:Toggle("God mode")
+    :Description("Can't take damage")
+    :Tooltip("Only works in some games")
+    :Flag("GodMode")
+    :OnChanged(function(on)
+        print("God mode:", on)
+    end)
+
+godMode:SetDisabled(true, "Not supported in this game")</pre></div>
+  <div class="note">Right-click an element (or long-press on mobile) to open its menu: pin to screen, copy value, reset, add a key bind and more.</div>
+</section>
+
+<!-- ================================================================ BUTTON -->
+<section id="button">
+  <h2>Button</h2>
+  <p>Runs a function when clicked. Can have a key bind.</p>
+<div class="code"><pre>Tab:Button({
+    Name = "Rejoin",
+    Description = "Reconnects to this server",
+    Callback = function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId)
+    end,
+})
+
+-- Chained style, with a key bind:
+Tab:Button("Reset character"):OnClick(function()
+    game.Players.LocalPlayer.Character:BreakJoints()
+end):Keybind("R")</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Keybind</code></td><td>Key that presses the button, e.g. <code>"R"</code>.</td></tr>
+    <tr><td class="method">:OnClick(fn)</td><td>Adds a click handler.</td></tr>
+    <tr><td class="method">:Press()</td><td>Presses the button from code.</td></tr>
+    <tr><td class="method">:Set(text)</td><td>Changes the button text.</td></tr>
+    <tr><td class="method">:Keybind(key) / :GetKeybind()</td><td>Sets or reads the key bind.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ TOGGLE -->
+<section id="toggle">
+  <h2>Toggle</h2>
+  <p>An on/off switch. The callback receives a boolean.</p>
+<div class="code"><pre>local fly = Tab:Toggle({
+    Name = "Fly",
+    Default = false,
+    Keybind = "F",
+    Flag = "Fly",
+    Callback = function(on)
+        print("Fly is now", on)
+    end,
+})
+
+fly:Set(true)     -- turn it on (fires the callback)
+fly:Toggle()      -- flip it
+print(fly:Get())  -- current state</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting state. Default <code>false</code>. (Also <code>Value</code>, <code>CurrentValue</code>.)</td></tr>
+    <tr><td><code>Keybind</code></td><td>Key that flips the toggle.</td></tr>
+    <tr><td class="method">:Set(value, silent)</td><td>Sets the state. <code>silent = true</code> skips the callback.</td></tr>
+    <tr><td class="method">:Toggle()</td><td>Flips the state.</td></tr>
+    <tr><td class="method">:Get()</td><td>Returns the state.</td></tr>
+    <tr><td class="method">:Keybind(key) / :GetKeybind()</td><td>Sets or reads the key bind.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ SLIDER -->
+<section id="slider">
+  <h2>Slider</h2>
+  <p>Pick a number in a range.</p>
+<div class="code"><pre>local speed = Tab:Slider({
+    Name = "WalkSpeed",
+    Min = 16,
+    Max = 200,
+    Default = 16,
+    Increment = 1,
+    Suffix = " studs",
+    Callback = function(value)
+        game.Players.LocalPlayer.Character.Humanoid.WalkSpeed = value
+    end,
+})
+
+-- Runs once the user lets go (good for expensive work):
+speed:OnRelease(function(value)
+    print("Settled on", value)
+end)
+
+speed:SetRange(16, 500)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Min</code> / <code>Max</code></td><td>The range. (Also <code>Range = { min, max }</code>.)</td></tr>
+    <tr><td><code>Default</code></td><td>Starting value. (Also <code>Value</code>, <code>CurrentValue</code>.)</td></tr>
+    <tr><td><code>Increment</code></td><td>Step size. (Also <code>Step</code>, or <code>Rounding</code> for decimal places.)</td></tr>
+    <tr><td><code>Suffix</code></td><td>Text after the number, e.g. <code>" studs"</code> or <code>"%"</code>.</td></tr>
+    <tr><td class="method">:Set(value, silent)</td><td>Sets the value (snapped to the increment).</td></tr>
+    <tr><td class="method">:Get()</td><td>Returns the value.</td></tr>
+    <tr><td class="method">:SetRange(min, max)</td><td>Changes the range and keeps the value inside it.</td></tr>
+    <tr><td class="method">:OnRelease(fn)</td><td>Runs when the user releases the slider.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ DROPDOWN -->
+<section id="dropdown">
+  <h2>Dropdown</h2>
+  <p>Pick one option, or several with <code>Multi = true</code>. Single-select passes a string (or <code>nil</code>); multi-select passes an array.</p>
+<div class="code"><pre>local weapon = Tab:Dropdown({
+    Name = "Weapon",
+    Options = { "Sword", "Bow", "Staff" },
+    Default = "Sword",
+    Callback = function(choice)
+        print("Picked", choice)
+    end,
+})
+
+local function playerNames()
+    local names = {}
+    for _, p in ipairs(game.Players:GetPlayers()) do
+        table.insert(names, p.Name)
+    end
+    return names
+end
+
+local targets = Tab:Dropdown({
+    Name = "Targets",
+    Options = playerNames(),
+    Multi = true,
+    Callback = function(list)
+        print("Targets:", table.concat(list, ", "))
+    end,
+})
+
+-- Keep the list fresh:
+game.Players.PlayerAdded:Connect(function()
+    targets:SetOptions(playerNames(), true)
+end)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Options</code></td><td>List of choices. (Also <code>Values</code>, <code>List</code>.)</td></tr>
+    <tr><td><code>Default</code></td><td>Starting choice (or a list for multi). (Also <code>Value</code>, <code>CurrentOption</code>.)</td></tr>
+    <tr><td><code>Multi</code></td><td>Allow several choices. (Also <code>Multiple</code>, <code>MultipleOptions</code>.)</td></tr>
+    <tr><td><code>AllowNone</code></td><td>Lets a single-select be cleared.</td></tr>
+    <tr><td><code>Placeholder</code></td><td>Text when nothing is selected. Default <code>"Select..."</code>.</td></tr>
+    <tr><td><code>Search</code></td><td>Show a search box. Default: shown when there are more than 7 options.</td></tr>
+    <tr><td><code>MaxVisible</code></td><td>Rows visible before scrolling. Default 6.</td></tr>
+    <tr><td><code>Width</code></td><td>Width of the control.</td></tr>
+    <tr><td class="method">:Set(value, silent) / :Get()</td><td>Sets or reads the selection.</td></tr>
+    <tr><td class="method">:SetOptions(list, keepSelection)</td><td>Replaces the options. Alias <code>Refresh</code>.</td></tr>
+    <tr><td class="method">:Add(option) / :Remove(option) / :Clear()</td><td>Edits the option list.</td></tr>
+    <tr><td class="method">:Open() / :Close()</td><td>Opens or closes the list.</td></tr>
+    <tr><td class="method">:Cycle(direction)</td><td>Selects the next (1) or previous (-1) option.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ INPUT -->
+<section id="input">
+  <h2>Input</h2>
+  <p>A text box. By default the callback runs when the user finishes typing.</p>
+<div class="code"><pre>Tab:Input({
+    Name = "Target",
+    Placeholder = "Username",
+    Callback = function(text)
+        print("Target set to", text)
+    end,
+})
+
+Tab:Input({
+    Name = "Amount",
+    Numeric = true,      -- only numbers
+    Live = true,         -- fire on every keystroke
+    MaxLength = 6,
+    Callback = function(text)
+        print(tonumber(text))
+    end,
+})</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting text. (Also <code>Value</code>, <code>Text</code>, <code>CurrentValue</code>.)</td></tr>
+    <tr><td><code>Placeholder</code></td><td>Hint text. (Also <code>PlaceholderText</code>.)</td></tr>
+    <tr><td><code>Numeric</code></td><td>Keeps only numbers.</td></tr>
+    <tr><td><code>Live</code></td><td>Fires on every keystroke. (Or <code>Finished = false</code>.)</td></tr>
+    <tr><td><code>MaxLength</code></td><td>Maximum characters.</td></tr>
+    <tr><td><code>ClearOnFocus</code></td><td>Empties the box when clicked.</td></tr>
+    <tr><td><code>Width</code></td><td>Width of the box.</td></tr>
+    <tr><td class="method">:Set(text, silent) / :Get()</td><td>Sets or reads the text.</td></tr>
+    <tr><td class="method">:Focus()</td><td>Focuses the box.</td></tr>
+    <tr><td class="method">:SetPlaceholder(text)</td><td>Changes the hint text.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ KEYBIND -->
+<section id="keybind">
+  <h2>Keybind</h2>
+  <p>A rebindable key. Click the key chip to rebind: the next key press becomes the bind, <code>Escape</code> cancels and <code>Backspace</code> clears.</p>
+<div class="code"><pre>-- Press: runs on every press
+Tab:Keybind({
+    Name = "Dash",
+    Default = "Q",
+    Callback = function()
+        print("Dash!")
+    end,
+})
+
+-- Toggle: each press flips a state
+Tab:Keybind({
+    Name = "Auto farm",
+    Default = "G",
+    Mode = "Toggle",
+    Callback = function(on)
+        print("Auto farm:", on)
+    end,
+})
+
+-- Hold: true on press, false on release
+Tab:Keybind({
+    Name = "Aim",
+    Default = "MouseButton2",
+    Mode = "Hold",
+    Callback = function(holding)
+        print("Aiming:", holding)
+    end,
+}):OnBindChanged(function(key)
+    print("Aim is now bound to", key and key.Name or "nothing")
+end)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting key, e.g. <code>"Q"</code> or <code>Enum.KeyCode.Q</code>. (Also <code>Key</code>, <code>Value</code>, <code>CurrentKeybind</code>.)</td></tr>
+    <tr><td><code>Mode</code></td><td><code>"Press"</code> (default), <code>"Toggle"</code> or <code>"Hold"</code>. (<code>HoldToInteract = true</code> means Hold.)</td></tr>
+    <tr><td><code>AllowMouse</code></td><td>Mouse buttons 2 and 3 can be bound. Default <code>true</code>.</td></tr>
+    <tr><td class="method">:Set(key, silent) / :Get()</td><td>Sets or reads the key. <code>:Set(nil)</code> clears it.</td></tr>
+    <tr><td class="method">:Listen()</td><td>Waits for the user to press a new key.</td></tr>
+    <tr><td class="method">:OnBindChanged(fn)</td><td>Runs when the user picks a different key.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ COLORPICKER -->
+<section id="colorpicker">
+  <h2>ColorPicker</h2>
+  <p>A color picker with a hex field and a rainbow mode. Adding <code>Transparency</code> shows a transparency bar and the callback also receives it.</p>
+<div class="code"><pre>Tab:ColorPicker({
+    Name = "ESP color",
+    Default = Color3.fromRGB(139, 92, 246),
+    Callback = function(color)
+        print(color)
+    end,
+})
+
+local fill = Tab:ColorPicker({
+    Name = "Fill",
+    Default = Color3.fromRGB(255, 80, 80),
+    Transparency = 0.2,
+    Callback = function(color, transparency)
+        print(color, transparency)
+    end,
+})
+
+fill:SetRainbow(true)</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option / Method</th><th>Description</th></tr>
+    <tr><td><code>Default</code></td><td>Starting <code>Color3</code>. (Also <code>Color</code>, <code>Value</code>.)</td></tr>
+    <tr><td><code>Transparency</code></td><td>Starting transparency, shows the transparency bar. (Also <code>Alpha</code>.)</td></tr>
+    <tr><td><code>Rainbow</code></td><td>Start in rainbow mode.</td></tr>
+    <tr><td class="method">:Set(color, transparency, silent)</td><td>Sets the color.</td></tr>
+    <tr><td class="method">:Get()</td><td>Returns the color (and transparency).</td></tr>
+    <tr><td class="method">:SetRainbow(enabled)</td><td>Turns rainbow mode on or off.</td></tr>
+  </table></div>
+</section>
+
+<!-- ================================================================ LABEL -->
+<section id="label">
+  <h2>Label</h2>
+  <p>A single line of text.</p>
+<div class="code"><pre>local status = Tab:Label("Status: ready")
+
+task.spawn(function()
+    while task.wait(1) do
+        status:SetText("Players: " .. #game.Players:GetPlayers())
+    end
+end)</pre></div>
+  <p><span class="method">:SetText(text)</span> changes the text (alias <code>:Set</code>).</p>
+</section>
+
+<!-- ================================================================ PARAGRAPH -->
+<section id="paragraph">
+  <h2>Paragraph</h2>
+  <p>A title with a longer block of text.</p>
+<div class="code"><pre>local info = Tab:Paragraph({
+    Title = "Welcome",
+    Content = "Thanks for using my script. Press RightControl to hide the UI.",
+})
+
+info:Set({ Title = "Updated", Content = "New content here." })
+info:SetContent("Just change the body.")</pre></div>
+</section>
+
+<!-- ================================================================ DIVIDER -->
+<section id="divider">
+  <h2>Divider</h2>
+  <p>A thin line between groups of elements.</p>
+<div class="code"><pre>Tab:Button("One")
+Tab:Divider()
+Tab:Button("Two")</pre></div>
+</section>
+
+<!-- ================================================================ NOTIFICATIONS -->
+<section id="notifications">
+  <h2>Notifications</h2>
+  <p>Toasts stacked bottom-right on desktop and top-center on touch devices. Hovering pauses the timer.</p>
+<div class="code"><pre>Aether:Notify({
+    Title = "Saved",
+    Content = "Config 'Legit' saved.",
+    Type = "Success",   -- Info (default), Success, Warning, Error
+    Duration = 4,       -- seconds; false keeps it until closed
+})
+
+-- With action buttons:
+Aether:Notify({
+    Title = "Teleported",
+    Content = "You were moved to spawn.",
+    Actions = {
+        { Name = "Undo", Callback = function() print("undo") end },
+    },
+})
+
+-- Update or dismiss it later:
+local note = Aether:Notify({ Title = "Farming...", Duration = false })
+task.wait(3)
+note:Update({ Title = "Done!", Type = "Success", Duration = 3 })</pre></div>
+  <div class="table-wrap"><table>
+    <tr><th>Option</th><th>Description</th></tr>
+    <tr><td><code>Title</code></td><td>Heading. (Also <code>Name</code>.)</td></tr>
+    <tr><td><code>Content</code></td><td>Body text. (Also <code>Description</code>, <code>Text</code>.)</td></tr>
+    <tr><td><code>Type</code></td><td><code>"Info"</code>, <code>"Success"</code>, <code>"Warning"</code> or <code>"Error"</code>.</td></tr>
+    <tr><td><code>Duration</code></td><td>Seconds. Default depends on text length. <code>false</code> never expires.</td></tr>
+    <tr><td><code>Icon</code></td><td>Custom icon. (Also <code>Image</code>.)</td></tr>
+    <tr><td><code>Actions</code></td><td>List of <code>{ Name, Callback }</code> buttons.</td></tr>
+  </table></div>
+  <p>The returned notification has <span class="method">:Update(options)</span>, <span class="method">:Dismiss()</span> (alias <code>Close</code>) and a <code>Dismissed</code> signal.</p>
+</section>
+
+<!-- ================================================================ DIALOGS -->
+<section id="dialogs">
+  <h2>Dialogs</h2>
+  <p>A modal box with buttons. Clicking the dimmed background cancels unless <code>Dismissible = false</code>.</p>
+<div class="code"><pre>Window:Dialog({
+    Title = "Unload?",
+    Content = "This removes the interface.",
+    Buttons = {
+        { Name = "Cancel" },
+        { Name = "Unload", Danger = true, Callback = function()
+            Aether:Unload()
+        end },
+    },
+})
+
+Window:Dialog({
+    Title = "Welcome!",
+    Content = "Read the rules before using this script.",
+    Dismissible = false,
+    Buttons = {
+        { Name = "I understand", Primary = true },
+    },
+})</pre></div>
+  <p>Button styles: <code>Primary = true</code> uses the accent color, <code>Danger = true</code> uses red.</p>
+</section>
+
+<!-- ================================================================ KEY SYSTEM -->
+<section id="keysystem">
+  <h2>Key system</h2>
+  <p>An optional key prompt. It yields until a valid key is entered (<code>true</code>) or the prompt is closed (<code>false</code>).</p>
+<div class="code"><pre>local unlocked = Aether:KeySystem({
+    Title = "My Hub",
+    Subtitle = "Key required",
+    Note = "Join the Discord to get a key.",
+    Link = "https://example.com/key",   -- "Get key" copies this
+    Keys = { "AETHER-1234" },
+    SaveKey = true,                     -- remember a valid key on this device
+})
+if not unlocked then return end
+
+local Window = Aether:Window({ Name = "My Hub" })</pre></div>
+  <p>Check keys your own way with <code>Check</code>:</p>
+<div class="code"><pre>Aether:KeySystem({
+    Title = "My Hub",
+    Check = function(key)
+        return key:sub(1, 7) == "AETHER-" and #key == 11
+    end,
+})</pre></div>
+  <div class="note">Aether never contacts a server itself: keys are checked against <code>Keys</code> or your own <code>Check</code> function.</div>
+</section>
+
+<!-- ================================================================ FLAGS -->
+<section id="flags">
+  <h2>Flags</h2>
+  <p>Give an element a <code>Flag</code> and its value is always available in <code>Aether.Flags</code>. The element itself is in <code>Aether.Options</code>.</p>
+<div class="code"><pre>Tab:Toggle({ Name = "Auto farm", Flag = "AutoFarm" })
+Tab:Slider({ Name = "Delay", Min = 0, Max = 5, Default = 1, Flag = "FarmDelay" })
+
+task.spawn(function()
+    while task.wait(Aether.Flags.FarmDelay) do
+        if Aether.Flags.AutoFarm then
+            print("farming...")
+        end
+    end
+end)
+
+-- Change an element from anywhere:
+Aether.Options.AutoFarm:Set(false)</pre></div>
+</section>
+
+<!-- ================================================================ CONFIGS -->
+<section id="configs">
+  <h2>Configs</h2>
+  <p>Every element with a value is saved automatically, keyed by its <code>Flag</code>, or by <code>"Tab/Section/Name"</code> when it has none. Opt out per element with <code>Save = false</code>. Values for elements that don't exist yet are applied the moment the element is created, so loading never depends on timing.</p>
+<div class="code"><pre>Window:SaveConfig("Legit")
+Window:LoadConfig("Legit")
+Window:DeleteConfig("Legit")
+print(Window:ListConfigs())   -- { "Legit", ... }
+
+Window:SetAutoload("Legit")   -- load this one on every start
+
+-- Share codes:
+local code = Window:ExportConfig()
+setclipboard(code)
+Window:ImportConfig(code)</pre></div>
+  <p>Or save everything automatically with <code>AutoSave = true</code> on the window.</p>
+  <h4>Files (executor workspace)</h4>
+<div class="code"><pre>Aether/&lt;Window&gt;/configs/&lt;name&gt;.json
+Aether/&lt;Window&gt;/autoload.txt
+Aether/&lt;Window&gt;/interface.json    -- theme, toggle key, pinned widgets...</pre></div>
+</section>
+
+<!-- ================================================================ SETTINGS -->
+<section id="settings">
+  <h2>Settings tab</h2>
+  <p>One line adds a ready-made tab. Nothing in it ends up inside configs.</p>
+<div class="code"><pre>Window:SettingsTab()</pre></div>
+  <div class="cards">
+    <div class="card"><b>Interface</b><span>Theme, toggle key, reduced motion.</span></div>
+    <div class="card"><b>Configs</b><span>Save, load, delete, autoload.</span></div>
+    <div class="card"><b>Share</b><span>Copy / paste config codes and theme codes.</span></div>
+    <div class="card"><b>Session</b><span>Version info and unload.</span></div>
+  </div>
+</section>
+
+<!-- ================================================================ THEMES -->
+<section id="themes">
+  <h2>Themes</h2>
+  <p>Switching themes animates every color to the new palette.</p>
+  <div class="swatches">
+    <span class="swatch"><i style="background:linear-gradient(135deg,#8B5CF6,#3B82F6)"></i>Aether</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#6366F1,#22D3EE)"></i>Midnight</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#22D3EE,#14B8A6)"></i>Ocean</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#F43F5E,#FB923C)"></i>Rose</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#10B981,#84CC16)"></i>Emerald</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#FAFAFA,#A1A1AA)"></i>Mono</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#7C3AED,#F5F5FA)"></i>Light</span>
+  </div>
+<div class="code"><pre>Aether:SetTheme("Ocean")
+
+-- Tweak just a few colors:
+Aether:SetTheme({ Accent = Color3.fromRGB(255, 120, 80) })
+
+-- Register your own theme:
+Aether:RegisterTheme("Sunset", {
+    Accent = Color3.fromHex("#F97316"),
+    AccentSecondary = Color3.fromHex("#EC4899"),
+    Background = Color3.fromHex("#140B0B"),
+})
+Aether:SetTheme("Sunset")
+
+print(Aether:GetThemes())
+
+-- Share the current theme as a code:
+local code = Aether:ExportTheme()   -- "AT1:..."
+local ok, err = Aether:ImportTheme(code)</pre></div>
+  <h4>Theme keys</h4>
+  <p><code>Accent</code>, <code>AccentSecondary</code>, <code>OnAccent</code>, <code>Background</code>, <code>BackgroundTransparency</code>, <code>Element</code>, <code>ElementTransparency</code>, <code>ElementHover</code>, <code>HoverTransparency</code>, <code>IndicatorTransparency</code>, <code>Control</code>, <code>Input</code>, <code>InputTransparency</code>, <code>Stroke</code>, <code>StrokeTransparency</code>, <code>Divider</code>, <code>DividerTransparency</code>, <code>Text</code>, <code>TextDim</code>, <code>TextMuted</code>, <code>Success</code>, <code>Warning</code>, <code>Danger</code>, <code>Shadow</code>, <code>GlowTransparency</code>. Missing keys fall back to the default Aether theme.</p>
+</section>
+
+<!-- ================================================================ PALETTE -->
+<section id="palette">
+  <h2>Command palette</h2>
+  <p>Press <code>Ctrl + K</code> (or the search button in the topbar) to fuzzy-search every element, tab and built-in command. Toggles flip in place, buttons press, and other elements are revealed. It even works while the window is hidden.</p>
+<div class="code"><pre>Window:OpenPalette()
+
+-- Different key, or turn it off:
+Aether:Window({ Name = "My Script", PaletteKey = "P" })
+Aether:Window({ Name = "My Script", PaletteKey = false })</pre></div>
+</section>
+
+<!-- ================================================================ PINS -->
+<section id="pins">
+  <h2>Pinned widgets</h2>
+  <p>Small floating copies of elements that stay on screen (even while the window is hidden) and stay in sync with the original. Pin by dragging an element out of the window, from the right-click / long-press menu, or from code. Pins are remembered between sessions.</p>
+<div class="code"><pre>local fly = Tab:Toggle("Fly")
+fly:Pin()                          -- default position
+fly:Pin(Vector2.new(40, 200))      -- screen pixels
+fly:Unpin()</pre></div>
+</section>
+
+<!-- ================================================================ ICONS -->
+<section id="icons">
+  <h2>Icons</h2>
+  <p>Anywhere an <code>Icon</code> is accepted you can use a <a href="https://lucide.dev/icons/" target="_blank" rel="noopener">Lucide</a> icon name, a numeric asset id, or a full <code>rbxassetid://</code> string. Unknown names fall back gracefully.</p>
+<div class="code"><pre>Window:Tab({ Name = "Combat", Icon = "sword" })
+Window:Tab({ Name = "Custom", Icon = 1234567890 })
+Window:Tab({ Name = "Custom 2", Icon = "rbxassetid://1234567890" })</pre></div>
+</section>
+
+<!-- ================================================================ LIBRARY -->
+<section id="library">
+  <h2>Library API</h2>
+  <div class="table-wrap"><table>
+    <tr><th>Member</th><th>Description</th></tr>
+    <tr><td class="method">Aether:Window(options)</td><td>Creates a window. Alias <code>CreateWindow</code>.</td></tr>
+    <tr><td class="method">Aether:Notify(options)</td><td>Shows a notification.</td></tr>
+    <tr><td class="method">Aether:KeySystem(options)</td><td>Shows the key prompt and yields.</td></tr>
+    <tr><td class="method">Aether:SetTheme(theme)</td><td>Sets a theme by name or table.</td></tr>
+    <tr><td class="method">Aether:GetThemes()</td><td>Lists theme names.</td></tr>
+    <tr><td class="method">Aether:RegisterTheme(name, theme)</td><td>Adds a theme.</td></tr>
+    <tr><td class="method">Aether:ExportTheme() / ImportTheme(code)</td><td>Theme share codes.</td></tr>
+    <tr><td class="method">Aether:SetVisibility(visible)</td><td>Shows or hides every window.</td></tr>
+    <tr><td class="method">Aether:IsVisible()</td><td>Is the first window visible?</td></tr>
+    <tr><td class="method">Aether:SetReducedMotion(enabled)</td><td>Turns every animation off.</td></tr>
+    <tr><td class="method">Aether:RegisterElement(name, class)</td><td>Adds a custom element type.</td></tr>
+    <tr><td class="method">Aether:LoadConfiguration()</td><td>Restores the auto-saved config (Rayfield style).</td></tr>
+    <tr><td class="method">Aether:Unload()</td><td>Removes every window, widget and notification. Alias <code>Destroy</code>.</td></tr>
+    <tr><td><code>Aether.Flags</code> / <code>Aether.Options</code></td><td>Flag values / flagged elements.</td></tr>
+    <tr><td><code>Aether.Unloaded</code></td><td>Signal fired on unload.</td></tr>
+    <tr><td><code>Aether.Version</code></td><td><code>"0.1.0"</code></td></tr>
+  </table></div>
+<div class="code"><pre>Aether.Unloaded:Connect(function()
+    -- clean up your own connections here
+    print("Aether unloaded")
+end)</pre></div>
+</section>
+
+<!-- ================================================================ CUSTOM -->
+<section id="custom">
+  <h2>Custom elements</h2>
+  <p>Extend the base <code>Aether.Element</code> class and register it. Every tab and section then gets a method with that name.</p>
+<div class="code"><pre>local Element = Aether.Element
+
+local Counter = Element.extend("Counter")
+Counter.Saveable = true
+
+function Counter.new(section, options)
+    local self = setmetatable({}, Counter)
+    Element.init(self, section, options, { Clickable = true })
+    self:_publish(options.Default or 0)
+    return Element._ready(self)
+end
+
+-- Clicking the row counts up.
+function Counter:_onClick()
+    self:Set(self.Value + 1)
+end
+
+function Counter:Set(value, silent)
+    self:_publish(value)
+    self:SetDescription("Count: " .. value)
+    if not silent then
+        self.Changed:Fire(value)
+    end
+    return self
+end
+
+Aether:RegisterElement("Counter", Counter)
+
+Tab:Counter({ Name = "Clicks", Callback = print })</pre></div>
+</section>
+
+<!-- ================================================================ RAYFIELD -->
+<section id="rayfield">
+  <h2>Rayfield compatibility</h2>
+  <p>Scripts written for Rayfield run on Aether after changing the loadstring line. Window options like <code>ConfigurationSaving</code>, <code>ToggleUIKeybind</code>, <code>KeySystem</code> + <code>KeySettings</code> and Rayfield theme names are translated, and the <code>Create*</code> methods keep Rayfield's callback shapes.</p>
+<div class="code"><pre>local Rayfield = loadstring(game:HttpGet("https://raw.githubusercontent.com/RedScaleR/Aether/main/Aether.lua"))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "My Hub",
+    ConfigurationSaving = { Enabled = true, FolderName = "MyHub", FileName = "config" },
+})
+
+local Tab = Window:CreateTab("Main", "home")
+
+Tab:CreateToggle({
+    Name = "Fly",
+    CurrentValue = false,
+    Flag = "Fly",
+    Callback = function(value) end,
+})
+
+Tab:CreateSlider({
+    Name = "Speed",
+    Range = { 16, 200 },
+    Increment = 1,
+    CurrentValue = 16,
+    Flag = "Speed",
+    Callback = function(value) end,
+})
+
+Rayfield:LoadConfiguration()</pre></div>
+  <div class="note warn"><code>GrabKeyFromSite</code> isn't supported, since Aether never downloads anything on its own. Put the keys in <code>Key</code>, or use <code>Aether:KeySystem</code> with a <code>Check</code> function.</div>
+</section>
+
+<footer>
+  Aether UI Library v0.1.0 · MIT License · <a href="https://github.com/RedScaleR/Aether">GitHub</a>
+</footer>
+
+  </main>
+</div>
+
+<script>
+(function () {
+  // --- Lua syntax highlighting -------------------------------------------
+  var KEYWORDS = /^(and|break|do|else|elseif|end|for|function|if|in|local|not|or|repeat|return|then|until|while|continue)$/;
+  var CONSTS = /^(true|false|nil|self)$/;
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function highlight(src) {
+    var out = "", i = 0, n = src.length;
+    while (i < n) {
+      var c = src[i], rest = src.slice(i), m;
+      if (rest.startsWith("--")) {
+        var end = src.indexOf("\n", i); if (end < 0) end = n;
+        out += '<span class="tc">' + esc(src.slice(i, end)) + "</span>"; i = end; continue;
+      }
+      if (c === '"' || c === "'") {
+        var j = i + 1;
+        while (j < n && src[j] !== c && src[j] !== "\n") { if (src[j] === "\\") j++; j++; }
+        out += '<span class="ts">' + esc(src.slice(i, j + 1)) + "</span>"; i = j + 1; continue;
+      }
+      if ((m = rest.match(/^\d+(\.\d+)?/)) && !/[\w]/.test(src[i - 1] || "")) {
+        out += '<span class="tn">' + m[0] + "</span>"; i += m[0].length; continue;
+      }
+      if ((m = rest.match(/^[A-Za-z_]\w*/))) {
+        var w = m[0], after = src.slice(i + w.length);
+        if (KEYWORDS.test(w)) out += '<span class="tk">' + w + "</span>";
+        else if (CONSTS.test(w)) out += '<span class="tb">' + w + "</span>";
+        else if (/^\s*[({"]/.test(after) && !/^\s*\{/.test(after) || /^\s*\(/.test(after)) out += '<span class="tf">' + w + "</span>";
+        else out += w;
+        i += w.length; continue;
+      }
+      out += esc(c); i++;
+    }
+    return out;
+  }
+
+  document.querySelectorAll(".code pre").forEach(function (pre) {
+    var raw = pre.textContent;
+    pre.innerHTML = highlight(raw);
+    var head = document.createElement("div");
+    head.className = "code-head";
+    head.innerHTML = '<span>lua</span><button class="copy" type="button">Copy</button>';
+    pre.parentNode.insertBefore(head, pre);
+    head.querySelector(".copy").addEventListener("click", function (e) {
+      var btn = e.currentTarget;
+      var done = function () { btn.textContent = "Copied!"; setTimeout(function () { btn.textContent = "Copy"; }, 1400); };
+      if (navigator.clipboard) navigator.clipboard.writeText(raw).then(done, done);
+      else {
+        var ta = document.createElement("textarea"); ta.value = raw; document.body.appendChild(ta);
+        ta.select(); try { document.execCommand("copy"); } catch (_) {} ta.remove(); done();
+      }
+    });
+  });
+
+  // --- Theme toggle --------------------------------------------------------
+  var root = document.documentElement;
+  try { var saved = localStorage.getItem("aether-docs-theme"); if (saved) root.setAttribute("data-theme", saved); } catch (_) {}
+  document.getElementById("themeBtn").addEventListener("click", function () {
+    var next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("aether-docs-theme", next); } catch (_) {}
+  });
+
+  // --- Mobile menu ---------------------------------------------------------
+  var sidebar = document.getElementById("sidebar");
+  document.getElementById("menuBtn").addEventListener("click", function () { sidebar.classList.toggle("open"); });
+  sidebar.addEventListener("click", function (e) { if (e.target.tagName === "A") sidebar.classList.remove("open"); });
+
+  // --- Active link on scroll ----------------------------------------------
+  var links = Array.prototype.slice.call(document.querySelectorAll("#nav a"));
+  var byId = {};
+  links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && byId[entry.target.id]) {
+        links.forEach(function (a) { a.classList.remove("active"); });
+        byId[entry.target.id].classList.add("active");
+      }
+    });
+  }, { rootMargin: "-70px 0px -70% 0px" });
+  document.querySelectorAll("main section[id]").forEach(function (s) { observer.observe(s); });
+
+  // --- Search: filters the nav and the sections ---------------------------
+  var sections = Array.prototype.slice.call(document.querySelectorAll("main section[id]"));
+  document.getElementById("search").addEventListener("input", function (e) {
+    var q = e.target.value.trim().toLowerCase();
+    sections.forEach(function (s) {
+      var hit = !q || s.textContent.toLowerCase().indexOf(q) !== -1;
+      s.classList.toggle("hidden-by-search", !hit);
+      if (byId[s.id]) byId[s.id].classList.toggle("hidden-by-search", !hit);
+    });
+    document.querySelectorAll(".nav-group").forEach(function (g) {
+      var any = g.querySelector("a:not(.hidden-by-search)");
+      g.classList.toggle("hidden-by-search", !any);
+    });
+  });
+})();
+</script>
+</body>
+</html>
