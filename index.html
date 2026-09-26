@@ -190,7 +190,23 @@ footer { color: var(--text-muted); font-size: 13px; border-top: 1px solid var(--
   main { padding: 24px 16px 100px; }
   h1 { font-size: 30px; }
   h2 { font-size: 22px; }
+  .topbar { padding: 0 12px; gap: 8px; }
+  .code pre { font-size: 12px; padding: 12px; }
+  .cards { grid-template-columns: 1fr; }
+  /* Tables become stacked cards so nothing scrolls sideways. */
+  .table-wrap { overflow: visible; border: 0; }
+  table, tbody, tr, td { display: block; width: 100%; }
+  tr:first-child { display: none; }
+  tr { border: 1px solid var(--stroke); border-radius: 10px; margin-bottom: 8px; background: var(--panel); }
+  td { border: 0; padding: 6px 12px; }
+  td:first-child { padding-top: 10px; font-weight: 600; }
+  td:last-child { padding-bottom: 10px; color: var(--text-dim); }
+  td:first-child, td code, .type { white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* Code wraps instead of scrolling sideways, on every screen size. */
+.code pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+main, .layout { max-width: 100%; }
 </style>
 </head>
 <body>
@@ -314,7 +330,7 @@ local Window = Aether:Window({
     ToggleKey = "RightControl",
 })
 
----------------------------------------------------------------- Player tab
+-- Player tab
 local Player = Window:Tab({ Name = "Player", Icon = "user" })
 
 Player:Section("Movement")
@@ -362,7 +378,7 @@ Player:Button("Rejoin")
         game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
     end)
 
----------------------------------------------------------------- Visuals tab
+-- Visuals tab
 local Visuals = Window:Tab({ Name = "Visuals", Icon = "eye" })
 
 Visuals:Toggle({ Name = "ESP", Flag = "ESP" })
@@ -380,7 +396,7 @@ Visuals:Dropdown({
     Flag = "ESPMode",
 })
 
----------------------------------------------------------------- Misc tab
+-- Misc tab
 local Misc = Window:Tab({ Name = "Misc", Icon = "settings-2" })
 
 local status = Misc:Label("Status: idle")
@@ -402,7 +418,7 @@ Misc:Keybind({
     end,
 })
 
----------------------------------------------------------------- Built-in settings
+-- Built-in settings
 Window:SettingsTab()
 
 Aether:Notify({ Title = "Loaded", Content = "Press RightControl to toggle the UI.", Type = "Info" })</pre></div>
